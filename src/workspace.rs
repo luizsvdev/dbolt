@@ -1,5 +1,6 @@
 use gpui::{
     ClickEvent, Context, Div, IntoElement, Render, SharedString, Window, div, prelude::*, px, rgb,
+    svg,
 };
 
 const BACKGROUND: u32 = 0x282c33;
@@ -32,21 +33,21 @@ impl Workspace {
     fn status_bar_button(
         &self,
         id: &'static str,
-        label: &'static str,
+        icon: &'static str,
         is_active: bool,
         on_click: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         div()
             .id(id)
-            .px_2()
-            .py_0p5()
+            .flex()
+            .items_center()
+            .p_1()
             .rounded_sm()
             .cursor_pointer()
-            .text_xs()
             .when(is_active, |this| this.bg(rgb(ACTIVE)))
             .hover(|style| style.bg(rgb(HOVER)))
-            .child(label)
+            .child(svg().path(icon).size_4().flex_none().text_color(rgb(TEXT)))
             .on_click(cx.listener(on_click))
     }
 
@@ -68,7 +69,7 @@ impl Workspace {
                     .gap_1()
                     .child(self.status_bar_button(
                         "toggle-left-panel",
-                        "Left panel",
+                        "icons/panel-left.svg",
                         self.left_panel_open,
                         |this, _event, _window, cx| {
                             this.left_panel_open = !this.left_panel_open;
@@ -84,7 +85,7 @@ impl Workspace {
                     .gap_1()
                     .child(self.status_bar_button(
                         "toggle-bottom-panel",
-                        "Bottom panel",
+                        "icons/panel-bottom.svg",
                         self.bottom_panel_open,
                         |this, _event, _window, cx| {
                             this.bottom_panel_open = !this.bottom_panel_open;
@@ -94,7 +95,7 @@ impl Workspace {
                     ))
                     .child(self.status_bar_button(
                         "toggle-right-panel",
-                        "Right panel",
+                        "icons/panel-right.svg",
                         self.right_panel_open,
                         |this, _event, _window, cx| {
                             this.right_panel_open = !this.right_panel_open;
