@@ -1,18 +1,13 @@
-use gpui::*;
+mod workspace;
 
-struct Workspace;
-
-impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().bg(rgb(0x1e1e2e))
-    }
-}
+use gpui::{App, AppContext, WindowOptions};
+use workspace::Workspace;
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
-        if let Err(error) =
-            cx.open_window(WindowOptions::default(), |_window, cx| cx.new(|_cx| Workspace))
-        {
+        if let Err(error) = cx.open_window(WindowOptions::default(), |_window, cx| {
+            cx.new(|_cx| Workspace::new())
+        }) {
             eprintln!("failed to open window: {error:#}");
             cx.quit();
             return;
