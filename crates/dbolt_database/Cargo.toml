@@ -1,0 +1,11 @@
+[package]
+name = "dbolt_database"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/dbolt_database.rs"
+
+[dependencies]
+bitflags = "2.13.2"
+thiserror = "2.0.21"

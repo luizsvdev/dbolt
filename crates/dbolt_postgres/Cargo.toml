@@ -1,0 +1,11 @@
+[package]
+name = "dbolt_postgres"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/dbolt_postgres.rs"
+
+[dependencies]
+dbolt_database = { path = "../dbolt_database" }
+postgres = "0.19.14"
