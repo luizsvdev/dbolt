@@ -16,5 +16,7 @@ All coding rules, GPUI conventions, and database/performance guidelines live in 
 ## Environment notes
 
 * `gpui` and `gpui_platform` are git dependencies on `zed-industries/zed`; they are not on crates.io (the crates.io `gpui` is an outdated 0.2.x). Expect API differences from older GPUI examples.
-* The Rust toolchain is Fedora's system Rust (no `rustup`). rust-analyzer needs the `rust-src` package (`sudo dnf install rust-src`).
-* Source lives in `src/`. Do not use `mod.rs` files.
+* rust-analyzer needs the `rust-src` component (`rustup component add rust-src`, or your distribution's `rust-src` package).
+* Linking GPUI on Linux needs the development packages for xkbcommon, xkbcommon-x11, xcb, fontconfig, freetype and wayland.
+* A faster linker such as `mold` is optional and configured per developer in an untracked `.cargo/config.toml`.
+* Source lives in `src/` and `crates/`. Do not use `mod.rs` files.
