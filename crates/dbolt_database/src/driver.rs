@@ -131,7 +131,8 @@ impl DriverRegistry {
 
     /// Returns the driver previously registered under the same id, if any.
     pub fn register(&mut self, driver: Arc<dyn Driver>) -> Option<Arc<dyn Driver>> {
-        self.drivers.insert(driver.metadata().id, driver)
+        self.drivers
+            .insert(driver.metadata().id, driver)
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<dyn Driver>> {

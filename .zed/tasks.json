@@ -1,6 +1,13 @@
 [
   {
-    "label": "cargo watch -x run -p dbolt",
+    "label": "cargo: run",
+    "command": "cargo",
+    "args": ["run", "-p", "dbolt"],
+    "allow_concurrent_runs": false,
+    "use_new_terminal": true
+  },
+  {
+    "label": "cargo: watch",
     "command": "cargo",
     "args": ["watch", "-x", "run", "-p", "dbolt"],
     "allow_concurrent_runs": false,

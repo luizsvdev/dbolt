@@ -64,7 +64,9 @@ fn connecting_with_a_bad_port_is_an_invalid_configuration() {
 #[test]
 #[ignore = "needs a running PostgreSQL server"]
 fn ping_succeeds_on_a_live_connection() {
-    connect().ping().expect("ping");
+    connect()
+        .ping()
+        .expect("ping");
 }
 
 #[test]
@@ -77,7 +79,11 @@ fn execute_decodes_common_types_and_nulls() {
         ))
         .expect("execute");
 
-    let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+    let names: Vec<&str> = result
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
     assert_eq!(
         names,
         ["number", "word", "flag", "ratio", "nothing", "moment"]
@@ -124,12 +130,22 @@ fn execute_reports_sql_errors_as_query_errors() {
 #[ignore = "needs a running PostgreSQL server"]
 fn relational_browsing_lists_schemas_and_tables() {
     let connection = connect();
-    let relational = connection.as_relational().expect("relational connection");
+    let relational = connection
+        .as_relational()
+        .expect("relational connection");
 
-    let schemas = relational.list_schemas().expect("schemas");
-    assert!(schemas.iter().any(|schema| schema == "public"));
+    let schemas = relational
+        .list_schemas()
+        .expect("schemas");
+    assert!(
+        schemas
+            .iter()
+            .any(|schema| schema == "public")
+    );
 
-    let tables = relational.list_tables("public").expect("tables");
+    let tables = relational
+        .list_tables("public")
+        .expect("tables");
     for table in &tables {
         println!(
             "{} {}",

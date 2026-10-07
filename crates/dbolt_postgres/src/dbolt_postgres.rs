@@ -89,9 +89,11 @@ impl Driver for PostgresDriver {
     fn connect(&self, values: &FormValues) -> Result<Box<dyn Connection>, DatabaseError> {
         let host = form_value(values, "host").unwrap_or("localhost");
         let port = match form_value(values, "port") {
-            Some(text) => text.parse::<u16>().map_err(|_| {
-                DatabaseError::InvalidConfig(format!("\"{text}\" is not a valid port"))
-            })?,
+            Some(text) => text
+                .parse::<u16>()
+                .map_err(|_| {
+                    DatabaseError::InvalidConfig(format!("\"{text}\" is not a valid port"))
+                })?,
             None => DEFAULT_PORT,
         };
         let user = form_value(values, "user")
@@ -132,7 +134,9 @@ fn form_value<'a>(values: &'a FormValues, id: &str) -> Option<&'a str> {
 
 fn describe_error(error: &postgres::Error) -> String {
     match error.as_db_error() {
-        Some(database_error) => database_error.message().to_string(),
+        Some(database_error) => database_error
+            .message()
+            .to_string(),
         None => match std::error::Error::source(error) {
             Some(cause) => format!("{error}: {cause}"),
             None => error.to_string(),
@@ -152,7 +156,9 @@ impl PostgresConnection {
     fn client(&self) -> MutexGuard<'_, Client> {
         // A panic while holding the lock cannot leave the client in a state
         // that is unsafe to reuse, so recover instead of poisoning the tab.
-        self.client.lock().unwrap_or_else(PoisonError::into_inner)
+        self.client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -166,13 +172,18 @@ impl Connection for PostgresConnection {
     fn execute(&self, request: &QueryRequest) -> Result<QueryResult, DatabaseError> {
         let mut client = self.client();
         // Preparing first gives column metadata even when no rows come back.
-        let statement = client.prepare(&request.text).map_err(query_error)?;
+        let statement = client
+            .prepare(&request.text)
+            .map_err(query_error)?;
         let columns: Vec<Column> = statement
             .columns()
             .iter()
             .map(|column| Column {
                 name: column.name().to_string(),
-                type_name: column.type_().name().to_string(),
+                type_name: column
+                    .type_()
+                    .name()
+                    .to_string(),
             })
             .collect();
 
@@ -183,8 +194,14 @@ impl Connection for PostgresConnection {
 
         let mut rows = Vec::new();
         let mut truncated = false;
-        while let Some(row) = row_iter.next().map_err(query_error)? {
-            if request.row_limit.is_some_and(|limit| rows.len() >= limit) {
+        while let Some(row) = row_iter
+            .next()
+            .map_err(query_error)?
+        {
+            if request
+                .row_limit
+                .is_some_and(|limit| rows.len() >= limit)
+            {
                 truncated = true;
                 break;
             }
@@ -216,7 +233,10 @@ impl RelationalConnection for PostgresConnection {
             .map_err(query_error)?;
 
         rows.iter()
-            .map(|row| row.try_get::<_, String>(0).map_err(query_error))
+            .map(|row| {
+                row.try_get::<_, String>(0)
+                    .map_err(query_error)
+            })
             .collect()
     }
 
@@ -232,8 +252,12 @@ impl RelationalConnection for PostgresConnection {
 
         rows.iter()
             .map(|row| {
-                let name: String = row.try_get(0).map_err(query_error)?;
-                let table_type: String = row.try_get(1).map_err(query_error)?;
+                let name: String = row
+                    .try_get(0)
+                    .map_err(query_error)?;
+                let table_type: String = row
+                    .try_get(1)
+                    .map_err(query_error)?;
                 let kind = if table_type == "VIEW" {
                     TableKind::View
                 } else {
@@ -294,7 +318,9 @@ fn decode_cell(row: &Row, index: usize) -> Result<Value, DatabaseError> {
             .try_get::<_, Option<Vec<u8>>>(index)
             .map_err(query_error)?
             .map(Value::Bytes),
-        other => return Ok(Value::Unsupported(other.name().to_string())),
+        other => {
+            return Ok(Value::Unsupported(other.name().to_string()));
+        }
     };
 
     Ok(value.unwrap_or(Value::Null))
