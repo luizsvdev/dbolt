@@ -1,4 +1,5 @@
 mod components;
+mod theme;
 mod ui;
 mod workspace;
 
