@@ -35,7 +35,7 @@ impl Workspace {
         });
 
         let title_bar = cx.new(|cx| AppTitleBar::new(window, cx));
-        let status_bar = cx.new(|_| AppStatusBar);
+        let status_bar = cx.new(|_| AppStatusBar::new(dock_area.clone()));
         Self {
             dock_area,
             title_bar,

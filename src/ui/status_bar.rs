@@ -1,48 +1,36 @@
-use gpui_kit::component::button::ButtonVariants;
-use gpui_kit::component::separator::Separator;
-use gpui_kit::{
-    Context, IntoElement, Render,
-    assets::IconName,
-    component::{button::Button, status_bar::StatusBar, *},
-};
-use gpui_kit::{Styled, Window, px};
+use gpui_kit::base::dock::{DockArea, DockPlacement};
+use gpui_kit::{Context, IntoElement, Render, assets::IconName, component::status_bar::StatusBar};
+use gpui_kit::{Entity, Styled, Window, px};
 
-pub struct AppStatusBar;
+use crate::components::icon_button::IconButton;
+
+pub struct AppStatusBar {
+    dock_area: Entity<DockArea>,
+}
+
+impl AppStatusBar {
+    pub fn new(dock_area: Entity<DockArea>) -> Self {
+        Self { dock_area }
+    }
+}
 
 impl Render for AppStatusBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         StatusBar::new()
             .h(px(30.))
             .border_0()
             .left(
-                Button::new("toggle-left-panel")
-                    .ghost()
+                IconButton::new("toggle-left-panel", IconName::PanelLeft)
                     .small()
-                    .icon(IconName::PanelLeft),
+                    .on_click({
+                        let dock_area = self.dock_area.clone();
+                        move |_, window, cx| {
+                            dock_area.update(cx, |area, cx| {
+                                area.toggle_dock(DockPlacement::Left, window, cx)
+                            })
+                        }
+                    }),
             )
-            .left(Separator::vertical())
-            .left(
-                Button::new("branch")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Github)
-                    .label("main")
-                    .on_click(|_, _window, _cx| { /* ... */ }),
-            )
-            .right(
-                Button::new("go-to-line")
-                    .ghost()
-                    .small()
-                    .label("36:29")
-                    .tooltip("Go to Line/Column")
-                    .on_click(cx.listener(|_this, _, _window, _cx| { /* ... */ })),
-            )
-            .right(Separator::vertical())
-            .right(
-                Button::new("toggle-right-panel")
-                    .ghost()
-                    .small()
-                    .icon(IconName::PanelRight),
-            )
+            .right(IconButton::new("toggle-right-panel", IconName::PanelRight).small())
     }
 }
