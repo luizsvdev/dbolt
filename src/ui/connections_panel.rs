@@ -1,8 +1,9 @@
 use gpui_kit::base::v_flex;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
+use gpui_kit::component::input::InputState;
 use gpui_kit::*;
+
+use crate::components::search_bar::SearchBar;
 
 pub struct ConnectionsPanel {
     focus_handle: FocusHandle,
@@ -11,8 +12,7 @@ pub struct ConnectionsPanel {
 
 impl ConnectionsPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search connection names..."));
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search connections..."));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -20,17 +20,8 @@ impl ConnectionsPanel {
         }
     }
 
-    fn render_search_input(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .border_b_1()
-            .p_0()
-            .border_color(cx.theme().border)
-            .child(
-                Input::new(&self.search_input)
-                    .line_height(relative(1.))
-                    .prefix(Icon::new(IconName::Search))
-                    .appearance(false),
-            )
+    fn render_search_input(&self) -> impl IntoElement {
+        SearchBar::new(&self.search_input)
     }
 }
 
@@ -55,10 +46,11 @@ impl Panel for ConnectionsPanel {
 }
 
 impl Render for ConnectionsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .flex_1()
             .size_full()
-            .child(self.render_search_input(cx))
+            .child(self.render_search_input())
             .child(
                 div()
                     .size_full()
