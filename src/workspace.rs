@@ -9,6 +9,7 @@ use gpui_kit::{
 };
 
 use crate::ui::connections_panel::ConnectionsPanel;
+use crate::ui::project_panel::ProjectPanel;
 use crate::ui::status_bar::AppStatusBar;
 use crate::ui::title_bar::AppTitleBar;
 
@@ -22,13 +23,22 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (dock_area, _dock_skin) = DockSkin::dock_area("main-dock", Some(1), window, cx);
 
-        let files_panel = cx.new(|cx| ConnectionsPanel::new(window, cx));
+        let connections_panel = cx.new(|cx| ConnectionsPanel::new(window, cx));
+        let project_panel = cx.new(|cx| ProjectPanel::new(cx));
 
         dock_area.update(cx, |area, cx| {
+            const DOCK_SIZE: Pixels = px(240.);
             area.add_panel_view(
-                panel_handle(files_panel),
+                panel_handle(connections_panel),
                 DockPlacement::Left,
-                Some(px(240.)),
+                Some(DOCK_SIZE),
+                window,
+                cx,
+            );
+            area.add_panel_view(
+                panel_handle(project_panel),
+                DockPlacement::Right,
+                Some(DOCK_SIZE),
                 window,
                 cx,
             );
