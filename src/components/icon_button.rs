@@ -1,6 +1,6 @@
 use gpui_kit::{assets::IconName, component::ActiveTheme, prelude::FluentBuilder, *};
 
-use crate::theme::{ICON_BUTTON_PADDING, ICON_SIZE_MEDIUM, ICON_SIZE_SMALL, RADIUS_SM};
+use crate::theme::{ICON_SIZE_MEDIUM, ICON_SIZE_SMALL, RADIUS_SM};
 
 pub enum IconSource {
     Path(SharedString),
@@ -70,21 +70,23 @@ impl IconButton {
 
 impl RenderOnce for IconButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let side = self.size + ICON_BUTTON_PADDING * 2.0;
+        let icon_color = cx.theme().foreground;
 
         div()
             .id(self.id)
             .flex()
             .items_center()
             .justify_center()
-            .size(side)
+            .p_1()
             .rounded(RADIUS_SM)
             .cursor_pointer()
             .hover(|style| style.bg(cx.theme().accent))
             .child(
                 svg()
                     .path(self.icon.path())
-                    .size(self.size),
+                    .size(self.size)
+                    .text_color(icon_color)
+                    .flex_shrink_0(),
             )
             .when_some(self.on_click, |this, handler| this.on_click(handler))
     }
