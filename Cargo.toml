@@ -8,5 +8,7 @@ members = ["crates/*"]
 
 [dependencies]
 anyhow = "1.0.104"
-gpui-kit = "0.7.0"
+dbolt_database = { version = "0.1.0", path = "crates/dbolt_database" }
+dbolt_postgres = { version = "0.1.0", path = "crates/dbolt_postgres" }
+gpui-kit = { version = "0.10.0", features = ["tree-sitter-sql"] }
 rust-embed = { version = "8.12.0", features = ["include-exclude"] }
