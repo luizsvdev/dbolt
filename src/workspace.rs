@@ -9,6 +9,7 @@ use gpui_kit::{
 };
 
 use crate::ui::connections_panel::ConnectionsPanel;
+use crate::ui::placeholder_panel::PlaceholderPanel;
 use crate::ui::project_panel::ProjectPanel;
 use crate::ui::status_bar::AppStatusBar;
 use crate::ui::title_bar::AppTitleBar;
@@ -25,9 +26,12 @@ impl Workspace {
 
         let connections_panel = cx.new(|cx| ConnectionsPanel::new(window, cx));
         let project_panel = cx.new(|cx| ProjectPanel::new(cx));
+        let editor_placeholder = cx.new(|cx| PlaceholderPanel::new("EditorPanel", "Editor", cx));
+        let results_placeholder = cx.new(|cx| PlaceholderPanel::new("ResultsPanel", "Results", cx));
 
         dock_area.update(cx, |area, cx| {
             const DOCK_SIZE: Pixels = px(240.);
+            const BOTTOM_DOCK_SIZE: Pixels = px(260.);
             area.add_panel_view(
                 panel_handle(connections_panel),
                 DockPlacement::Left,
@@ -39,6 +43,20 @@ impl Workspace {
                 panel_handle(project_panel),
                 DockPlacement::Right,
                 Some(DOCK_SIZE),
+                window,
+                cx,
+            );
+            area.add_panel_view(
+                panel_handle(editor_placeholder),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+            area.add_panel_view(
+                panel_handle(results_placeholder),
+                DockPlacement::Bottom,
+                Some(BOTTOM_DOCK_SIZE),
                 window,
                 cx,
             );
