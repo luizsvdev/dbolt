@@ -12,6 +12,8 @@ gpui_kit::assets::icon_assets!(
         FileCode,
         FolderPlus,
         FolderSearch,
+        KeyRound,
+        Link2,
         ListVideo,
         Pencil,
         Plug,

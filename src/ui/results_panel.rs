@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
-use dbolt_database::Value;
+use dbolt_database::{ColumnKey, Value};
 use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::base::dock::DockPlacement;
 use gpui_kit::base::input::Rope;
@@ -17,7 +17,7 @@ use gpui_kit::component::input::{
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column as TableColumn, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Size};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -26,7 +26,10 @@ use crate::components::icon_button::IconButton;
 use crate::components::menu::entity_menu_item;
 use crate::query_execution::{ExecutionState, QueryExecution, QueryRun};
 use crate::sql_statements::from_target;
-use crate::theme::{ICON_SIZE_SMALL, LABEL_SIZE_SMALL, PANEL_HEADER_HEIGHT, editor_background};
+use crate::theme::{
+    EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE, EDITOR_FONT_WEIGHT, EDITOR_LINE_HEIGHT, ICON_SIZE_SMALL,
+    LABEL_SIZE_SMALL, PANEL_HEADER_HEIGHT, editor_background, editor_font_features,
+};
 use crate::ui::editor_panel::{ConsoleRun, TabId};
 use crate::util::ResultExt;
 
@@ -133,6 +136,16 @@ pub(crate) fn plural(count: u64, singular: &str, plural: &str) -> String {
 }
 
 const ROW_NUMBER_WIDTH: Pixels = px(48.);
+const GRID_ROW_HEIGHT: Pixels = px(24.);
+const GRID_HEADER_HEIGHT: Pixels = px(26.);
+const CELL_TEXT_SIZE: Pixels = px(12.);
+const HEADER_TEXT_SIZE: Pixels = px(11.);
+const TYPE_LABEL_SIZE: Pixels = px(10.);
+const KEY_ICON_SIZE: Pixels = px(11.);
+/// Characters a key icon and the gaps around the type label take in a header.
+const HEADER_EXTRA_CHARS: usize = 4;
+const SELECTED_ROW_TINT: f32 = 0.08;
+const SELECTED_CELL_TINT: f32 = 0.18;
 
 /// A rectangle of cells in data coordinates (row, column), from where the
 /// drag started to where it is now.
@@ -214,7 +227,13 @@ impl ResultTableDelegate {
                     })
                     .max()
                     .unwrap_or(0);
-                let widest = widest_value.max(column.name.chars().count());
+                let header = column.name.chars().count()
+                    + column
+                        .type_name
+                        .chars()
+                        .count()
+                    + HEADER_EXTRA_CHARS;
+                let widest = widest_value.max(header);
                 let width = (widest as f32 * CHAR_WIDTH + CELL_PADDING)
                     .clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
                 TableColumn::new(
@@ -371,11 +390,30 @@ impl TableDelegate for ResultTableDelegate {
                 .border_color(border_color)
                 .into_any_element();
         };
+        let theme = cx.theme();
         let name = self
             .columns
             .get(col_ix)
             .map(|column| column.name.clone())
             .unwrap_or_default();
+        let source = self
+            .execution
+            .read(cx)
+            .columns()
+            .get(data_col);
+        let key_icon = source
+            .and_then(|column| column.key)
+            .map(|key| match key {
+                ColumnKey::Primary => (AssetIconName::KeyRound, theme.yellow),
+                ColumnKey::Foreign => (AssetIconName::Link2, theme.blue),
+            });
+        let type_name: SharedString = source
+            .map(|column| column.type_name.clone())
+            .unwrap_or_default()
+            .into();
+        let name_color = theme.foreground;
+        let type_color = theme.muted_foreground;
+        let mono_font = theme.mono_font_family.clone();
         let last_row = self
             .rows_count(cx)
             .saturating_sub(1);
@@ -396,7 +434,29 @@ impl TableDelegate for ResultTableDelegate {
                     cx.notify();
                 }),
             )
-            .child(div().truncate().child(name))
+            .gap(px(5.))
+            .text_size(HEADER_TEXT_SIZE)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(name_color)
+            .when_some(key_icon, |this, (icon, color)| {
+                this.child(
+                    Icon::new(icon)
+                        .size(KEY_ICON_SIZE)
+                        .text_color(color)
+                        .flex_none(),
+                )
+            })
+            .child(div().flex_none().child(name))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(mono_font)
+                    .font_weight(FontWeight::NORMAL)
+                    .text_size(TYPE_LABEL_SIZE)
+                    .text_color(type_color)
+                    .child(type_name),
+            )
             .into_any_element()
     }
 
@@ -409,6 +469,13 @@ impl TableDelegate for ResultTableDelegate {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let border_color = theme.table_row_border;
+        let row_selected = self
+            .selection
+            .is_some_and(|selection| {
+                selection
+                    .rows()
+                    .contains(&row_ix)
+            });
         let Some(data_col) = col_ix.checked_sub(1) else {
             let last_col = self
                 .data_column_count()
@@ -416,11 +483,20 @@ impl TableDelegate for ResultTableDelegate {
             return cell_frame()
                 .id(("row-number", row_ix))
                 .justify_end()
-                .bg(theme.tokens.table_head)
+                .bg(if row_selected {
+                    theme.border
+                } else {
+                    theme.tokens.table_head.into()
+                })
                 .border_r_1()
                 .border_color(border_color)
-                .text_xs()
-                .text_color(theme.muted_foreground)
+                .font_family(theme.mono_font_family.clone())
+                .text_size(HEADER_TEXT_SIZE)
+                .text_color(if row_selected {
+                    theme.foreground
+                } else {
+                    theme.muted_foreground
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |table, event: &MouseDownEvent, window, cx| {
@@ -441,7 +517,26 @@ impl TableDelegate for ResultTableDelegate {
         let selected = self
             .selection
             .is_some_and(|selection| selection.contains(row_ix, data_col));
-        let selected_bg = theme.tokens.table_active;
+        let is_head = self
+            .selection
+            .is_some_and(|selection| selection.head == (row_ix, data_col));
+        let tint = if selected {
+            Some(
+                theme
+                    .ring
+                    .opacity(SELECTED_CELL_TINT),
+            )
+        } else if row_selected {
+            Some(
+                theme
+                    .ring
+                    .opacity(SELECTED_ROW_TINT),
+            )
+        } else {
+            None
+        };
+        let focus_color = theme.ring;
+        let mono_font = theme.mono_font_family.clone();
         let table = cx.weak_entity();
         let execution = self.execution.read(cx);
         let Some(value) = execution
@@ -485,9 +580,12 @@ impl TableDelegate for ResultTableDelegate {
                         .max(1)
                     + data_col,
             ))
+            .relative()
             .border_r_1()
             .border_color(border_color)
-            .when(selected, |this| this.bg(selected_bg))
+            .font_family(mono_font)
+            .text_size(CELL_TEXT_SIZE)
+            .when_some(tint, |this, tint| this.bg(tint))
             .when(is_number, |this| this.justify_end())
             .on_mouse_down(
                 MouseButton::Left,
@@ -515,6 +613,15 @@ impl TableDelegate for ResultTableDelegate {
                     .when(is_placeholder, |this| this.italic())
                     .child(text),
             )
+            .when(is_head, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .border_1()
+                        .border_color(focus_color),
+                )
+            })
             .context_menu(move |menu, _window, cx| cell_context_menu(&table, cell, menu, cx))
             .into_any_element()
     }
@@ -1041,7 +1148,8 @@ impl ResultsPanel {
                         .language(OUTPUT_LANGUAGE)
                         .line_number(false)
                         .folding(false)
-                        .indent_guides(false);
+                        .indent_guides(false)
+                        .scroll_beyond_last_line(Some(0));
                     editor.set_highlighter_factory(highlighter_factory, cx);
                     editor
                 });
@@ -1329,7 +1437,6 @@ impl ResultsPanel {
     }
 
     fn render_output(&self, console: &Console, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
         div()
             .size_full()
             .bg(editor_background(cx))
@@ -1338,8 +1445,11 @@ impl ResultsPanel {
                     .readonly(true)
                     .appearance(false)
                     .bordered(false)
-                    .font_family(theme.mono_font_family.clone())
-                    .text_size(LABEL_SIZE_SMALL)
+                    .font_family(EDITOR_FONT_FAMILY)
+                    .text_size(EDITOR_FONT_SIZE)
+                    .font_weight(EDITOR_FONT_WEIGHT)
+                    .line_height(relative(EDITOR_LINE_HEIGHT))
+                    .font_features(editor_font_features())
                     .size_full(),
             )
     }
@@ -1365,6 +1475,7 @@ impl ResultsPanel {
             .h(PANEL_HEADER_HEIGHT)
             .px_2()
             .gap_2()
+            .bg(editor_background(cx))
             .border_b_1()
             .border_color(theme.border)
             .text_size(LABEL_SIZE_SMALL)
@@ -1409,7 +1520,8 @@ impl ResultsPanel {
                         DataTable::new(&tab.table)
                             .bordered(false)
                             .fixed_cols_border(false)
-                            .small(),
+                            .with_size(Size::Size(GRID_ROW_HEIGHT))
+                            .header_row_height(GRID_HEADER_HEIGHT),
                     ),
             )
             .when_some(error, |this, error| {
