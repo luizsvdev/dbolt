@@ -98,6 +98,18 @@ impl ConnectionProfile {
     }
 }
 
+/// Everything one scope stores: its profiles and the folders of the
+/// connections tree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredConnections {
+    #[serde(default)]
+    pub connections: Vec<ConnectionProfile>,
+    /// Folder paths, segments separated by `/`. Kept so that folders without
+    /// connections are not lost; a profile's `group` names its folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("Could not read connections: {0}")]
@@ -108,16 +120,16 @@ pub enum StoreError {
     Secret(String),
 }
 
-/// Persists the profiles of one scope. Implementations block on I/O; call
-/// them from a background task.
+/// Persists the profiles and folders of one scope. Implementations block on
+/// I/O; call them from a background task.
 pub trait ConnectionStore: Send + Sync {
     fn scope(&self) -> ConnectionScope;
 
     /// Returned profiles have `scope` set to `self.scope()`.
-    fn load(&self) -> Result<Vec<ConnectionProfile>, StoreError>;
+    fn load(&self) -> Result<StoredConnections, StoreError>;
 
-    /// Replaces every stored profile of this scope.
-    fn save(&self, profiles: &[ConnectionProfile]) -> Result<(), StoreError>;
+    /// Replaces everything stored for this scope.
+    fn save(&self, stored: &StoredConnections) -> Result<(), StoreError>;
 }
 
 /// Holds password-like form values outside the profile files. Implementations
@@ -134,14 +146,14 @@ pub trait SecretStore: Send + Sync {
 /// store is wired in.
 pub struct MemoryConnectionStore {
     scope: ConnectionScope,
-    profiles: Mutex<Vec<ConnectionProfile>>,
+    stored: Mutex<StoredConnections>,
 }
 
 impl MemoryConnectionStore {
     pub fn new(scope: ConnectionScope) -> Self {
         Self {
             scope,
-            profiles: Mutex::new(Vec::new()),
+            stored: Mutex::new(StoredConnections::default()),
         }
     }
 }
@@ -151,29 +163,25 @@ impl ConnectionStore for MemoryConnectionStore {
         self.scope
     }
 
-    fn load(&self) -> Result<Vec<ConnectionProfile>, StoreError> {
+    fn load(&self) -> Result<StoredConnections, StoreError> {
         // A poisoned lock only means another thread panicked mid-update;
-        // the vector itself is still valid.
-        let profiles = self
-            .profiles
+        // the data itself is still valid.
+        let mut stored = self
+            .stored
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        Ok(profiles
-            .iter()
-            .cloned()
-            .map(|mut profile| {
-                profile.scope = self.scope;
-                profile
-            })
-            .collect())
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for profile in &mut stored.connections {
+            profile.scope = self.scope;
+        }
+        Ok(stored)
     }
 
-    fn save(&self, profiles: &[ConnectionProfile]) -> Result<(), StoreError> {
-        let mut stored = self
-            .profiles
+    fn save(&self, stored: &StoredConnections) -> Result<(), StoreError> {
+        *self
+            .stored
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        *stored = profiles.to_vec();
+            .unwrap_or_else(PoisonError::into_inner) = stored.clone();
         Ok(())
     }
 }
@@ -274,16 +282,21 @@ mod tests {
     fn memory_store_sets_scope_on_load() -> Result<(), StoreError> {
         let store = MemoryConnectionStore::new(ConnectionScope::Global);
         let profile = ConnectionProfile::new("shared", "postgres", ConnectionScope::Project);
-        store.save(&[profile])?;
+        store.save(&StoredConnections {
+            connections: vec![profile],
+            folders: vec!["work".into()],
+        })?;
 
         let loaded = store.load()?;
 
-        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.connections.len(), 1);
         assert!(
             loaded
+                .connections
                 .iter()
                 .all(|profile| profile.scope == ConnectionScope::Global)
         );
+        assert_eq!(loaded.folders, vec!["work".to_string()]);
         Ok(())
     }
 }
