@@ -1,8 +1,7 @@
 use std::cmp::Ordering;
-use std::ops::Range;
 use std::rc::Rc;
 
-use gpui_kit::base::input::{DiagnosticColors, InputEditorStyle, RopeExt};
+use gpui_kit::base::input::{DiagnosticColors, DisplayPoint, InputEditorStyle, RopeExt};
 use gpui_kit::component::button::{Button, ButtonRounded, ButtonVariants};
 use gpui_kit::component::input::EditorState;
 use gpui_kit::component::{ActiveTheme, IconName, Selectable, Sizable};
@@ -89,8 +88,33 @@ struct SelectionShape {
     lines: Vec<SelectedLine>,
 }
 
-/// Where the selection sits on each visible line, measured from the editor's
-/// last layout.
+/// The left edge of the character at `offset`, on the row where the editor
+/// places that offset (a wrap boundary belongs to the row below).
+fn x_at(
+    editor: &mut EditorState,
+    offset: usize,
+    text_bounds: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) -> Option<Point<Pixels>> {
+    let offset = editor
+        .text()
+        .offset_to_offset_utf16(offset);
+    editor
+        .bounds_for_range(offset..offset, text_bounds, window, cx)
+        .map(|bounds| bounds.origin)
+}
+
+fn previous_char_offset(editor: &EditorState, offset: usize) -> usize {
+    let text = editor.text();
+    text.char_index_to_offset(
+        text.offset_to_char_index(offset)
+            .saturating_sub(1),
+    )
+}
+
+/// Where the selection sits on each visible screen row, measured from the
+/// editor's last layout. A soft-wrapped line takes one row per wrap.
 fn selection_shape(
     editor: &mut EditorState,
     window: &mut Window,
@@ -106,54 +130,90 @@ fn selection_shape(
     }
     let line_height = editor.line_height()?;
     let text_bounds = editor.text_bounds()?;
-    let visible_rows = editor.visible_row_range()?;
+    let visible_lines = editor.visible_row_range()?;
     let overshoot = line_height * SELECTION_CORNER_RATIO * 2.;
-    let first_row = editor
+    let first_line = editor
         .text()
         .offset_to_point(selection.start)
         .row
-        .max(visible_rows.start);
-    let last_row = editor
+        .max(visible_lines.start);
+    let last_line = editor
         .text()
         .offset_to_point(selection.end)
         .row
         .min(
-            visible_rows
+            visible_lines
                 .end
                 .saturating_sub(1),
         );
+
     let mut top = None;
     let mut lines = Vec::new();
-    for row in first_row..=last_row {
-        let text = editor.text();
-        let line_start = text.line_start_offset(row);
-        let line_end = text.line_end_offset(row);
-        let segment_start = selection
-            .start
-            .max(line_start);
-        let segment: Range<usize> = segment_start
-            ..selection
-                .end
-                .min(line_end)
-                .max(segment_start);
-        let utf16_range =
-            text.offset_to_offset_utf16(segment.start)..text.offset_to_offset_utf16(segment.end);
-        let bounds = editor.bounds_for_range(utf16_range, text_bounds, window, cx)?;
-        let selects_newline = selection.end > line_end;
-        let end_x = if segment.is_empty() {
-            bounds.left()
-        } else {
-            bounds.right()
+    for line in first_line..=last_line {
+        let line_start = editor
+            .text()
+            .line_start_offset(line);
+        let line_end = editor
+            .text()
+            .line_end_offset(line);
+        let Some(display_rows) = editor
+            .display_map()
+            .buffer_line_to_display_row_range(line)
+        else {
+            continue;
         };
-        top.get_or_insert(bounds.top());
-        lines.push(SelectedLine {
-            start_x: bounds.left(),
-            end_x: if selects_newline {
-                end_x + overshoot
+        let row_starts: Vec<usize> = display_rows
+            .clone()
+            .map(|row| {
+                line_start
+                    + editor
+                        .display_map()
+                        .display_pos_to_buffer_pos(DisplayPoint::new(row, 0))
+                        .col
+            })
+            .collect();
+        for (row_ix, row_start) in row_starts
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let wraps = row_ix + 1 < row_starts.len();
+            let row_end = row_starts
+                .get(row_ix + 1)
+                .copied()
+                .unwrap_or(line_end);
+            let segment_start = selection.start.max(row_start);
+            let segment_end = selection.end.min(row_end);
+            let selects_newline = !wraps && selection.end > line_end;
+            if segment_start > segment_end || (segment_start == segment_end && !selects_newline) {
+                continue;
+            }
+            let start = x_at(editor, segment_start, text_bounds, window, cx)?;
+            let end_x = if wraps && segment_end == row_end {
+                // The wrap boundary is placed on the next row, so the row's
+                // end is its last character plus that character's width.
+                let last_char = previous_char_offset(editor, row_end);
+                let last_x = x_at(editor, last_char, text_bounds, window, cx)?.x;
+                let width = if last_char > row_start {
+                    let before = previous_char_offset(editor, last_char);
+                    last_x - x_at(editor, before, text_bounds, window, cx)?.x
+                } else {
+                    line_height / 2.
+                };
+                last_x + width
             } else {
-                end_x
-            },
-        });
+                x_at(editor, segment_end, text_bounds, window, cx)?.x
+            };
+            top.get_or_insert(start.y);
+            lines.push(SelectedLine {
+                start_x: start.x,
+                end_x: if selects_newline {
+                    end_x + overshoot
+                } else {
+                    end_x
+                },
+            });
+        }
     }
     Some(SelectionShape {
         top: top?,
