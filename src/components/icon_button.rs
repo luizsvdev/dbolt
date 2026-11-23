@@ -37,7 +37,7 @@ impl From<SharedString> for IconSource {
 }
 
 impl IconSource {
-    fn path(&self) -> SharedString {
+    pub fn path(&self) -> SharedString {
         match self {
             Self::Path(path) => path.clone(),
             Self::Named(name) => name.path(),
@@ -51,6 +51,9 @@ pub struct IconButton {
     icon: IconSource,
     size: Pixels,
     selected: bool,
+    disabled: bool,
+    muted: bool,
+    padding: Pixels,
     on_click: Option<ClickHandler>,
 }
 
@@ -61,6 +64,9 @@ impl IconButton {
             icon: icon.into(),
             size: ICON_SIZE_MEDIUM,
             selected: false,
+            disabled: false,
+            muted: false,
+            padding: px(2.),
             on_click: None,
         }
     }
@@ -78,6 +84,22 @@ impl IconButton {
         self.base = self
             .base
             .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx));
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    pub fn muted(mut self) -> Self {
+        self.muted = true;
+        self
+    }
+
+    /// No padding around the icon, for buttons sized by their slot.
+    pub fn compact(mut self) -> Self {
+        self.padding = px(0.);
         self
     }
 
@@ -114,18 +136,25 @@ impl DropdownMenu for IconButton {}
 
 impl RenderOnce for IconButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let icon_color = cx.theme().foreground;
+        let icon_color = if self.disabled || self.muted {
+            cx.theme().muted_foreground
+        } else {
+            cx.theme().foreground
+        };
         let hover = cx.theme().accent;
+        let disabled = self.disabled;
 
         self.base
             .flex()
             .items_center()
             .justify_center()
-            .p(px(2.))
+            .p(self.padding)
             .rounded(RADIUS_BUTTON)
-            .cursor_pointer()
+            .when(!disabled, |this| {
+                this.cursor_pointer()
+                    .hover(|style| style.bg(hover))
+            })
             .when(self.selected, |this| this.bg(hover))
-            .hover(|style| style.bg(hover))
             // Keeps a press from focusing the button or, in the title bar,
             // from starting a window drag.
             .on_any_mouse_down(|_, window, _| window.prevent_default())
@@ -136,6 +165,10 @@ impl RenderOnce for IconButton {
                     .text_color(icon_color)
                     .flex_shrink_0(),
             )
-            .when_some(self.on_click, |this, handler| this.on_click(handler))
+            .when_some(
+                self.on_click
+                    .filter(|_| !disabled),
+                |this, handler| this.on_click(handler),
+            )
     }
 }

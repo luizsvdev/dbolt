@@ -19,6 +19,7 @@ gpui_kit::assets::icon_assets!(
         Plug,
         RefreshCw,
         Table,
+        Table2,
         Trash,
         Unplug,
     ]

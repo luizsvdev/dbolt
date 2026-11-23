@@ -174,6 +174,46 @@ impl Project {
             .map(|(_, path)| path.as_str())
     }
 
+    /// Removes the folder, its subfolders and every connection in them.
+    pub fn delete_folder(&mut self, folder: &str, cx: &mut Context<Self>) -> bool {
+        let mut scopes = HashSet::new();
+        for (scope, path) in &self.folders {
+            if is_in_folder(path, folder) {
+                scopes.insert(*scope);
+            }
+        }
+        for profile in &self.connections {
+            if profile
+                .group
+                .as_deref()
+                .is_some_and(|group| is_in_folder(group, folder))
+            {
+                scopes.insert(profile.scope);
+            }
+        }
+        if scopes.is_empty()
+            || !scopes
+                .iter()
+                .all(|scope| self.can_save(*scope, cx))
+        {
+            return false;
+        }
+        self.folders
+            .retain(|(_, path)| !is_in_folder(path, folder));
+        self.connections
+            .retain(|profile| {
+                !profile
+                    .group
+                    .as_deref()
+                    .is_some_and(|group| is_in_folder(group, folder))
+            });
+        self.connections_changed(cx);
+        for scope in scopes {
+            self.save_scope(scope, cx);
+        }
+        true
+    }
+
     pub fn rename_folder(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> bool {
         let mut scopes = HashSet::new();
         for (scope, path) in &self.folders {
@@ -528,6 +568,14 @@ impl Project {
     }
 }
 
+/// Whether `path` is `folder` or inside it, matching whole path segments.
+pub fn is_in_folder(path: &str, folder: &str) -> bool {
+    path == folder
+        || path
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn renamed_folder_path(path: &str, from: &str, to: &str) -> Option<String> {
     if path == from {
         return Some(to.to_string());
@@ -597,7 +645,15 @@ pub fn prompt_open_folder(project: &Entity<Project>, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::renamed_folder_path;
+    use super::{is_in_folder, renamed_folder_path};
+
+    #[test]
+    fn is_in_folder_matches_whole_segments() {
+        assert!(is_in_folder("work", "work"));
+        assert!(is_in_folder("work/prod", "work"));
+        assert!(!is_in_folder("workshop", "work"));
+        assert!(!is_in_folder("home/work", "work"));
+    }
 
     #[test]
     fn renamed_folder_path_moves_the_folder_and_its_contents_only() {

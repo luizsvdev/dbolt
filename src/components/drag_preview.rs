@@ -1,16 +1,19 @@
 use gpui_kit::base::h_flex;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable};
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 
+use crate::components::icon_button::IconSource;
+use crate::theme::ICON_SIZE_SMALL;
+
 pub struct DragPreview {
-    icon: IconName,
+    icon: IconSource,
     label: SharedString,
 }
 
 impl DragPreview {
-    pub fn new(icon: IconName, label: impl Into<SharedString>) -> Self {
+    pub fn new(icon: impl Into<IconSource>, label: impl Into<SharedString>) -> Self {
         Self {
-            icon,
+            icon: icon.into(),
             label: label.into(),
         }
     }
@@ -31,8 +34,10 @@ impl Render for DragPreview {
             .text_sm()
             .shadow_md()
             .child(
-                Icon::new(self.icon.clone())
-                    .small()
+                svg()
+                    .path(self.icon.path())
+                    .size(ICON_SIZE_SMALL)
+                    .flex_none()
                     .text_color(theme.muted_foreground),
             )
             .child(self.label.clone())

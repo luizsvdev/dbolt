@@ -25,13 +25,14 @@ use crate::components::icon_button::IconButton;
 use crate::components::inline_name_editor::{InlineNameEditor, InlineNameEvent};
 use crate::components::menu::entity_menu_item;
 use crate::components::search_bar::SearchBar;
-use crate::project::{Project, ProjectEvent, SecretChange};
+use crate::project::{Project, ProjectEvent, SecretChange, is_in_folder};
 use crate::ui::connection_dialog::{ConnectionDialog, ConnectionDialogEvent, SavedConnection};
 use crate::ui::connection_tree::{
     ConnectionContent, ConnectionEntry, ConnectionStatus, Load, NodeKind, SchemaEntry, TreeNode,
     build_tree, connection_node_id, folder_path, group_node_id, group_segments,
     insert_pending_folder,
 };
+use crate::ui::results_panel::plural;
 use crate::util::ResultExt;
 
 const INDENT: Pixels = px(12.);
@@ -836,6 +837,98 @@ impl ConnectionsPanel {
         });
     }
 
+    fn connections_in_folder(&self, folder: &str) -> Vec<ConnectionId> {
+        self.connections
+            .iter()
+            .filter(|entry| {
+                entry
+                    .profile
+                    .group
+                    .as_deref()
+                    .is_some_and(|group| is_in_folder(group, folder))
+            })
+            .map(|entry| entry.profile.id)
+            .collect()
+    }
+
+    /// An empty folder goes at once; one with connections or subfolders asks
+    /// first, because its connections are deleted with it.
+    fn confirm_delete_folder(
+        &mut self,
+        folder: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let connection_count = self
+            .connections_in_folder(&folder)
+            .len();
+        let subfolder_count = self
+            .folders
+            .iter()
+            .filter(|path| **path != folder && is_in_folder(path, &folder))
+            .count();
+        if connection_count == 0 && subfolder_count == 0 {
+            self.delete_folder(&folder, cx);
+            return;
+        }
+        let name = folder
+            .rsplit('/')
+            .next()
+            .unwrap_or(&folder)
+            .to_string();
+        let mut contents = Vec::new();
+        if connection_count > 0 {
+            contents.push(plural(connection_count as u64, "connection", "connections"));
+        }
+        if subfolder_count > 0 {
+            contents.push(plural(subfolder_count as u64, "folder", "folders"));
+        }
+        let description = format!(
+            "\"{name}\" and the {} in it will be removed permanently.",
+            contents.join(" and ")
+        );
+        let panel = cx.weak_entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let panel = panel.clone();
+            let folder = folder.clone();
+            alert
+                .title("Delete folder?")
+                .description(description.clone())
+                .show_cancel(true)
+                .ok_text("Delete")
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, _, cx| {
+                    panel
+                        .update(cx, |this, cx| this.delete_folder(&folder, cx))
+                        .log_err();
+                    true
+                })
+        });
+    }
+
+    fn delete_folder(&mut self, folder: &str, cx: &mut Context<Self>) {
+        let connections = self.connections_in_folder(folder);
+        let secret_changes: Vec<SecretChange> = connections
+            .iter()
+            .filter_map(|connection| self.entry(*connection))
+            .flat_map(|entry| {
+                let connection = entry.profile.id;
+                self.password_fields(&entry.profile)
+                    .into_iter()
+                    .map(move |field| SecretChange::Delete { connection, field })
+            })
+            .collect();
+        for connection in connections {
+            self.disconnect(connection, cx);
+        }
+        self.project
+            .update(cx, |project, cx| {
+                if project.delete_folder(folder, cx) {
+                    project.change_secrets(secret_changes, cx);
+                }
+            });
+    }
+
     fn delete_connection(&mut self, connection: ConnectionId, cx: &mut Context<Self>) {
         let Some(entry) = self.entry(connection) else {
             return;
@@ -923,26 +1016,30 @@ fn render_tree_row(
     let muted = theme.muted_foreground;
 
     let (icon, icon_color) = match kind {
-        Some(NodeKind::Group { .. }) if entry.is_expanded() => (IconName::FolderOpen, muted),
-        Some(NodeKind::Group { .. } | NodeKind::PendingFolder) => (IconName::Folder, muted),
+        Some(NodeKind::Group { .. }) if entry.is_expanded() => {
+            (Icon::new(IconName::FolderOpen), muted)
+        }
+        Some(NodeKind::Group { .. } | NodeKind::PendingFolder) => {
+            (Icon::new(IconName::Folder), muted)
+        }
         Some(NodeKind::Connection { status, .. }) => match status {
-            ConnectionStatus::Disconnected => (IconName::HardDrive, muted),
-            ConnectionStatus::Connecting => (IconName::LoaderCircle, theme.warning),
-            ConnectionStatus::Connected => (IconName::HardDrive, theme.success),
-            ConnectionStatus::Failed(_) => (IconName::CircleAlert, theme.danger),
+            ConnectionStatus::Disconnected => (Icon::new(AssetIconName::Database), muted),
+            ConnectionStatus::Connecting => (Icon::new(IconName::LoaderCircle), theme.warning),
+            ConnectionStatus::Connected => (Icon::new(AssetIconName::Database), theme.success),
+            ConnectionStatus::Failed(_) => (Icon::new(IconName::CircleAlert), theme.danger),
         },
-        Some(NodeKind::Schema { .. }) => (IconName::Network, theme.info),
+        Some(NodeKind::Schema { .. }) => (Icon::new(IconName::Network), theme.info),
         Some(NodeKind::Table {
             kind: TableKind::Table,
             ..
-        }) => (IconName::LayoutDashboard, theme.foreground),
+        }) => (Icon::new(AssetIconName::Table2), theme.foreground),
         Some(NodeKind::Table {
             kind: TableKind::View,
             ..
-        }) => (IconName::Eye, theme.foreground),
-        Some(NodeKind::Loading) => (IconName::LoaderCircle, muted),
-        Some(NodeKind::Error(_)) => (IconName::CircleAlert, theme.danger),
-        Some(NodeKind::Empty) | None => (IconName::Minus, muted),
+        }) => (Icon::new(IconName::Eye), theme.foreground),
+        Some(NodeKind::Loading) => (Icon::new(IconName::LoaderCircle), muted),
+        Some(NodeKind::Error(_)) => (Icon::new(IconName::CircleAlert), theme.danger),
+        Some(NodeKind::Empty) | None => (Icon::new(IconName::Minus), muted),
     };
     let label_color = match kind {
         Some(NodeKind::Error(_)) => theme.danger,
@@ -956,7 +1053,10 @@ fn render_tree_row(
             ..
         })
     );
-    let chevron = entry.is_folder().then(|| {
+    // Folders open on click and show it with their icon; only database
+    // objects carry a chevron.
+    let is_group = matches!(kind, Some(NodeKind::Group { .. }));
+    let chevron = (entry.is_folder() && !is_group).then(|| {
         Icon::new(if entry.is_expanded() {
             IconName::ChevronDown
         } else {
@@ -1003,7 +1103,7 @@ fn render_tree_row(
                         name: item.label.clone(),
                     },
                     |dragged, _, _, cx| {
-                        cx.new(|_| DragPreview::new(IconName::HardDrive, dragged.name.clone()))
+                        cx.new(|_| DragPreview::new(AssetIconName::Database, dragged.name.clone()))
                     },
                 )
             },
@@ -1036,8 +1136,7 @@ fn render_tree_row(
                         .when_some(chevron, |this, chevron| this.child(chevron)),
                 )
                 .child(
-                    Icon::new(icon)
-                        .small()
+                    icon.small()
                         .flex_shrink_0()
                         .text_color(icon_color),
                 )
@@ -1120,6 +1219,7 @@ fn context_menu(
     match kind {
         NodeKind::Group { path } => {
             let rename_path = path.clone();
+            let delete_path = path.clone();
             creation_menu(panel, Some(path.clone()), menu)
                 .separator()
                 .item(entity_menu_item(
@@ -1134,6 +1234,14 @@ fn context_menu(
                             window,
                             cx,
                         )
+                    },
+                ))
+                .item(entity_menu_item(
+                    panel,
+                    "Delete…",
+                    Some(AssetIconName::Trash),
+                    move |this, window, cx| {
+                        this.confirm_delete_folder(delete_path.clone(), window, cx)
                     },
                 ))
         }
