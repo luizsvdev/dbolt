@@ -19,8 +19,8 @@ use gpui_kit::*;
 use crate::ui::connection_tree::group_segments;
 use crate::util::ResultExt;
 
-/// A profile ready to persist, with the password values the user typed kept
-/// apart so they go to the secret store and never into `profile.values`.
+/// Password values are kept apart from the profile so they go to the secret
+/// store and never into `profile.values`.
 #[derive(Clone)]
 pub struct SavedConnection {
     pub profile: ConnectionProfile,
@@ -82,8 +82,6 @@ pub struct ConnectionDialog {
     driver_select: Entity<SelectState<Vec<DriverChoice>>>,
     driver_id: Option<SharedString>,
     name_input: Entity<InputState>,
-    /// Folder the connection is in; set by where it was created, not edited
-    /// in the form.
     group: Option<String>,
     global: bool,
     fields: Vec<FieldInput>,
@@ -271,8 +269,6 @@ impl ConnectionDialog {
             .collect()
     }
 
-    /// Returns the driver and the typed values when the form is valid, and
-    /// shows the errors otherwise.
     fn validated(&mut self, cx: &mut Context<Self>) -> Option<(Arc<dyn Driver>, FormValues)> {
         let Some(driver) = self.driver() else {
             self.driver_error = Some("Choose a driver".to_string());
@@ -496,8 +492,8 @@ impl Render for ConnectionDialog {
     }
 }
 
-/// Checks what a profile needs before it can be saved or tested. A required
-/// password may stay empty when editing, because the saved one is kept.
+/// A required password may stay empty when editing, because the saved one is
+/// kept.
 pub fn validate(
     name: &str,
     form: &ConnectionForm,

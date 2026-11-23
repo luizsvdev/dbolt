@@ -8,14 +8,11 @@ pub struct DirectoryEntry {
     pub is_directory: bool,
 }
 
-/// Names hidden from the project tree because they are tool internals, not
-/// project content.
 pub fn is_ignored_name(name: &str) -> bool {
     name == ".git"
 }
 
-/// Lists the direct children of `directory`, folders first, each group sorted
-/// by name ignoring case. Blocks on file I/O; call it from a background task.
+/// Blocks on file I/O; call it from a background task.
 pub fn read_directory(directory: &Path) -> io::Result<Vec<DirectoryEntry>> {
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(directory)? {

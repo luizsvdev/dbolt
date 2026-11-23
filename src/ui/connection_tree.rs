@@ -12,7 +12,6 @@ pub enum Load<T> {
 }
 
 impl<T> Load<T> {
-    /// Whether expanding the node should start a (new) load.
     pub fn needs_load(&self) -> bool {
         matches!(self, Self::NotLoaded | Self::Failed(_))
     }
@@ -41,8 +40,6 @@ impl SchemaEntry {
     }
 }
 
-/// Drivers with schemas list them under the connection; drivers without
-/// them list their tables directly under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionContent {
     Schemas(Vec<SchemaEntry>),
@@ -95,13 +92,10 @@ pub enum NodeKind {
     Loading,
     Error(String),
     Empty,
-    /// The row where a new folder's name is being typed.
     PendingFolder,
 }
 
 impl NodeKind {
-    /// Status rows (loading, error, empty) are not objects and never match a
-    /// search.
     pub fn is_status(&self) -> bool {
         matches!(self, Self::Loading | Self::Error(_) | Self::Empty)
     }
@@ -134,9 +128,7 @@ pub fn group_node_id(path: &str) -> SharedString {
 
 pub const PENDING_FOLDER_ID: &str = "pending-folder";
 
-/// Adds the row for a folder being created, first inside `parent` (expanded
-/// so the row is visible) or at the top level. Falls back to the top level
-/// when the parent is hidden by a search.
+/// Falls back to the top level when the parent is hidden by a search.
 pub fn insert_pending_folder(nodes: &mut Vec<TreeNode>, parent: Option<&str>) {
     let pending = TreeNode::leaf(
         PENDING_FOLDER_ID.into(),
@@ -167,7 +159,6 @@ fn find_node_mut<'a>(nodes: &'a mut [TreeNode], id: &SharedString) -> Option<&'a
     None
 }
 
-/// Validates a new folder name and joins it under `parent`.
 pub fn folder_path(
     parent: Option<&str>,
     name: &str,
@@ -208,8 +199,6 @@ fn status_node_id(parent: &SharedString) -> SharedString {
     format!("{parent}#status").into()
 }
 
-/// Splits a `/`-separated group path, ignoring empty segments so that
-/// `"a//b/"` and `"a/b"` land in the same folder.
 pub fn group_segments(group: Option<&str>) -> Vec<&str> {
     group
         .map(|group| {
@@ -222,11 +211,6 @@ pub fn group_segments(group: Option<&str>) -> Vec<&str> {
         .unwrap_or_default()
 }
 
-/// Builds the visible tree: folders (from `folders` and from the profiles'
-/// groups), then connections sorted by name,
-/// down to whatever has been loaded. A non-empty `filter` keeps only nodes
-/// whose name contains it (case-insensitively) plus their ancestors, which
-/// are expanded so the matches are visible.
 pub fn build_tree(
     connections: &[ConnectionEntry],
     folders: &[String],

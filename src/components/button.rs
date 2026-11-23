@@ -11,15 +11,11 @@ pub type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum ButtonStyle {
-    /// No background until hovered; for toolbars, title bars and menus.
     #[default]
     Subtle,
-    /// Solid background with a border; for actions in panel content and
-    /// dialogs.
     Filled,
 }
 
-/// Zed's default `ButtonSize`: 22px tall with 4px horizontal padding.
 const HEIGHT: Pixels = px(22.);
 const HORIZONTAL_PADDING: Pixels = px(4.);
 
@@ -50,7 +46,6 @@ impl Button {
         self
     }
 
-    /// Defaults to the theme's UI font size.
     pub fn label_size(mut self, size: Pixels) -> Self {
         self.label_size = Some(size);
         self

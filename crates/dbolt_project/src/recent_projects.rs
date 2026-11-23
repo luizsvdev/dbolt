@@ -6,8 +6,7 @@ use crate::{config_directory, write_json_atomically};
 const RECENT_PROJECTS_FILE_NAME: &str = "recent_projects.json";
 const MAXIMUM_RECENT_PROJECTS: usize = 10;
 
-/// The recently opened project folders, most recent first. Blocks on file
-/// I/O; call it from a background task.
+/// Blocks on file I/O; call it from a background task.
 pub struct RecentProjects {
     path: PathBuf,
 }
@@ -37,8 +36,6 @@ impl RecentProjects {
         }
     }
 
-    /// Moves `project` to the front of the list and saves it. Returns the
-    /// updated list.
     pub fn record(&self, project: &Path) -> io::Result<Vec<PathBuf>> {
         let mut projects = self.load()?;
         projects.retain(|existing| existing != project);

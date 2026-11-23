@@ -2,8 +2,6 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::*;
 
-/// A menu item that updates `entity` when clicked. Does nothing if the entity
-/// was dropped while the menu was open.
 pub fn entity_menu_item<T: 'static>(
     entity: &WeakEntity<T>,
     label: &'static str,

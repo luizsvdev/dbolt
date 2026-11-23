@@ -14,16 +14,12 @@ use gpui_kit::{
 
 #[derive(Debug, Clone)]
 pub enum ProjectEvent {
-    /// A folder was opened; `root`, the project store and the connections
-    /// changed.
     Opened,
     ConnectionsChanged,
     RecentProjectsChanged,
-    /// A failure the user must see (load, save, keyring, folder picker).
     Error(SharedString),
 }
 
-/// Secret store work that must happen together with a profile change.
 pub enum SecretChange {
     Set {
         connection: ConnectionId,
@@ -58,15 +54,12 @@ impl SecretChange {
     }
 }
 
-/// The open folder and the connection profiles visible in it: the project's
-/// own profiles followed by the global ones.
 pub struct Project {
     root: Option<PathBuf>,
     project_store: Option<Arc<dyn ConnectionStore>>,
     global_store: Arc<dyn ConnectionStore>,
     secret_store: Arc<dyn SecretStore>,
     connections: Vec<ConnectionProfile>,
-    /// Folder paths of the connections tree, with the scope storing each.
     folders: Vec<(ConnectionScope, String)>,
     /// False while the stores are being read. Changing profiles before the
     /// read finishes would save a list missing the stored ones.
@@ -125,7 +118,6 @@ impl Project {
         self.root.as_deref()
     }
 
-    /// The name of the root folder, for titles.
     pub fn name(&self) -> Option<SharedString> {
         let root = self.root.as_ref()?;
         let name = root
@@ -141,21 +133,16 @@ impl Project {
         Some(name.into())
     }
 
-    /// Project profiles first, then global ones.
     pub fn connections(&self) -> &[ConnectionProfile] {
         &self.connections
     }
 
-    /// Folder paths (`/`-separated) that exist even without connections.
     pub fn folders(&self) -> impl Iterator<Item = &str> {
         self.folders
             .iter()
             .map(|(_, path)| path.as_str())
     }
 
-    /// Renames the folder at path `from` to `to`, moving its subfolders and
-    /// connections along, in every scope that holds any of them. Returns
-    /// false when the change was refused.
     pub fn rename_folder(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> bool {
         let mut scopes = HashSet::new();
         for (scope, path) in &self.folders {
@@ -203,8 +190,6 @@ impl Project {
         true
     }
 
-    /// Saves an empty folder in the project, or globally while no folder is
-    /// open. Returns false when the change was refused.
     pub fn add_folder(&mut self, path: String, cx: &mut Context<Self>) -> bool {
         let scope = if self.project_store.is_some() {
             ConnectionScope::Project
@@ -254,8 +239,6 @@ impl Project {
         self.record_recent_project(root, cx);
     }
 
-    /// Saves a new profile in the store of its `scope`. Returns false, after
-    /// reporting why, when the change was refused.
     pub fn add_connection(&mut self, profile: ConnectionProfile, cx: &mut Context<Self>) -> bool {
         if !self.can_save(profile.scope, cx) {
             return false;
@@ -268,8 +251,6 @@ impl Project {
         true
     }
 
-    /// Replaces the profile with the same id. Changing `scope` moves it to
-    /// the other store. Returns false when the change was refused.
     pub fn update_connection(
         &mut self,
         profile: ConnectionProfile,
@@ -308,9 +289,7 @@ impl Project {
         true
     }
 
-    /// Removes a profile. Its secrets stay in the keyring until they are
-    /// deleted with [`Self::change_secrets`]. Returns false when the change
-    /// was refused.
+    /// Keyring entries are left for the caller to delete.
     pub fn remove_connection(&mut self, id: ConnectionId, cx: &mut Context<Self>) -> bool {
         let Some(index) = self
             .connections
@@ -330,7 +309,6 @@ impl Project {
         true
     }
 
-    /// Applies keyring changes in order with the profile saves.
     pub fn change_secrets(&mut self, changes: Vec<SecretChange>, cx: &mut Context<Self>) {
         if changes.is_empty() {
             return;
@@ -413,8 +391,6 @@ impl Project {
         self.chain_store_task(cx, move || store.save(&stored));
     }
 
-    /// Runs `operation` on a background thread after every earlier store
-    /// operation finished, and reports its error.
     fn chain_store_task(
         &mut self,
         cx: &mut Context<Self>,
@@ -521,8 +497,6 @@ impl Project {
     }
 }
 
-/// `path` with its `from` prefix replaced by `to`, when `path` is the folder
-/// `from` or inside it.
 fn renamed_folder_path(path: &str, from: &str, to: &str) -> Option<String> {
     if path == from {
         return Some(to.to_string());
@@ -560,7 +534,6 @@ fn report_error_from_task(
     }
 }
 
-/// Shows the native folder picker and opens the chosen folder in `project`.
 pub fn prompt_open_folder(project: &Entity<Project>, cx: &mut App) {
     let paths = cx.prompt_for_paths(PathPromptOptions {
         files: false,

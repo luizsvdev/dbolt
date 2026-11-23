@@ -52,7 +52,6 @@ impl TaskKey {
     }
 }
 
-/// What is carried while a connection row is dragged.
 struct DraggedConnection {
     id: ConnectionId,
     name: SharedString,
@@ -60,13 +59,10 @@ struct DraggedConnection {
 
 #[derive(Clone)]
 enum FolderEditTarget {
-    /// A new folder, named in a row added inside `parent`.
     New { parent: Option<String> },
-    /// The folder at `path`, renamed in its own row.
     Rename { path: String },
 }
 
-/// A folder name being typed in the tree.
 struct FolderEdit {
     target: FolderEditTarget,
     editor: Entity<InlineNameEditor>,
@@ -83,11 +79,9 @@ pub struct ConnectionsPanel {
     live_connections: HashMap<ConnectionId, Arc<dyn Connection>>,
     expanded: HashSet<SharedString>,
     filter: String,
-    /// Kind of every visible node, shared with the tree's row renderer.
     node_kinds: Rc<HashMap<SharedString, NodeKind>>,
     profiles_loaded: bool,
     tasks: HashMap<TaskKey, Task<()>>,
-    /// Saved folder paths, including empty ones.
     folders: Vec<String>,
     folder_edit: Option<FolderEdit>,
     dialog_subscription: Option<Subscription>,
@@ -147,8 +141,6 @@ impl ConnectionsPanel {
         panel
     }
 
-    /// Mirrors the project's profiles, keeping the live state of the
-    /// connections that are still there.
     fn sync_profiles(&mut self, cx: &mut Context<Self>) {
         let project = self.project.read(cx);
         let profiles = project.connections().to_vec();
@@ -259,8 +251,6 @@ impl ConnectionsPanel {
         }
     }
 
-    /// Connects if needed, then loads the connection's children if they are
-    /// not loaded yet.
     fn open_connection(
         &mut self,
         connection: ConnectionId,
@@ -555,8 +545,6 @@ impl ConnectionsPanel {
         }
     }
 
-    /// Every folder path in the tree: saved folders, the folders holding a
-    /// connection, and their parents.
     fn known_folders(&self) -> Vec<String> {
         let mut folders: HashSet<String> = self
             .folders
@@ -572,8 +560,6 @@ impl ConnectionsPanel {
         folders.into_iter().collect()
     }
 
-    /// Shows a name field in the tree: a new row for a new folder, or the
-    /// folder's own row for a rename.
     fn start_folder_edit(
         &mut self,
         target: FolderEditTarget,
@@ -663,9 +649,7 @@ impl ConnectionsPanel {
         }
     }
 
-    /// The folder a drop on `kind`'s row puts a connection in: the folder
-    /// itself, or the folder holding the connection the row belongs to.
-    /// `None` when the row is not a drop target.
+    /// `None` when the row is not a drop target; `Some(None)` is the top level.
     fn drop_folder(&self, kind: &NodeKind) -> Option<Option<String>> {
         match kind {
             NodeKind::Group { path } => Some(Some(path.clone())),
@@ -970,10 +954,7 @@ fn render_tree_row(
         edits_this_row.then_some(editor)
     });
     let is_editing = editor.is_some();
-    // As in Zed's project panel, every row keeps a border so its content
-    // never moves, and only its colour changes: the focus colour on the
-    // active row (selected or being edited) while the panel holds focus.
-    // A name field only has focus inside its panel, so editing implies it.
+    // The border is always there, so the row never shifts when it is shown.
     let border_color = if is_editing || focused_selection {
         theme.ring
     } else {
@@ -1059,7 +1040,6 @@ fn render_tree_row(
         )
 }
 
-/// "New Connection…" and "New Folder…", creating inside `folder` when set.
 fn creation_menu(
     panel: &WeakEntity<ConnectionsPanel>,
     folder: Option<String>,

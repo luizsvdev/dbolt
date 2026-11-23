@@ -121,7 +121,6 @@ impl RenderOnce for IconButton {
             .flex()
             .items_center()
             .justify_center()
-            // Zed pads icon buttons by 2px, making a 20px square for a 16px icon.
             .p(px(2.))
             .rounded(RADIUS_BUTTON)
             .cursor_pointer()

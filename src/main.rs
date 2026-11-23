@@ -37,8 +37,6 @@ fn load_theme(cx: &mut App) {
         {
             Theme::update(cx, |current| {
                 current.apply_config(&theme);
-                // Library widgets such as the app menu bar take their corner
-                // radius from the theme; keep them in line with our buttons.
                 current.radius = RADIUS_BUTTON;
             });
         }

@@ -7,15 +7,13 @@ use crate::{
     CONNECTIONS_FILE_NAME, PROJECT_DIRECTORY_NAME, config_directory, write_json_atomically,
 };
 
-/// Stores the profiles of one scope in a JSON file. Secrets are never part of
-/// a profile, so the file is safe to commit.
+/// Secrets are never part of a profile, so this file is safe to commit.
 pub struct FileConnectionStore {
     scope: ConnectionScope,
     path: PathBuf,
 }
 
 impl FileConnectionStore {
-    /// Profiles of the project at `project_root`, in `.dbolt/connections.json`.
     pub fn project(project_root: &Path) -> Self {
         Self {
             scope: ConnectionScope::Project,
@@ -25,7 +23,6 @@ impl FileConnectionStore {
         }
     }
 
-    /// Profiles shared by every project, in the user configuration directory.
     pub fn global() -> Result<Self, StoreError> {
         let directory = config_directory().ok_or_else(|| {
             StoreError::Read("the user configuration directory is unknown".to_string())
@@ -33,7 +30,6 @@ impl FileConnectionStore {
         Ok(Self::global_in(&directory))
     }
 
-    /// Like [`Self::global`], with an explicit configuration directory.
     pub fn global_in(config_directory: &Path) -> Self {
         Self {
             scope: ConnectionScope::Global,

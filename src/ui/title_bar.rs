@@ -113,8 +113,6 @@ impl AppTitleBar {
         let title_bar = cx.weak_entity();
 
         Popover::new("project-picker")
-            // The search bar and the footer border run edge to edge, as in
-            // Zed's pickers, so the popover itself has no padding.
             .p_0()
             .overflow_hidden()
             .open(self.picker_open)
@@ -232,7 +230,6 @@ fn render_project_row(index: usize, path: &Path, cx: &App) -> Stateful<Div> {
         )
 }
 
-/// Shows paths under the home folder as `~/…`.
 fn display_path(path: &Path) -> String {
     match std::env::home_dir().and_then(|home| {
         path.strip_prefix(&home)

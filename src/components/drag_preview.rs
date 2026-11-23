@@ -2,7 +2,6 @@ use gpui_kit::base::h_flex;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable};
 use gpui_kit::*;
 
-/// The label that follows the cursor while a tree row is dragged.
 pub struct DragPreview {
     icon: IconName,
     label: SharedString,

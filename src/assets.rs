@@ -2,8 +2,7 @@ use std::borrow::Cow;
 
 use gpui_kit::{AssetSource, SharedString};
 
-// Lucide icons beyond the default bundle. Only the icons listed here are
-// embedded, so add new ones to this list before using them.
+// Only the icons listed here are embedded in the binary.
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [

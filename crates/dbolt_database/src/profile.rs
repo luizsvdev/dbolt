@@ -30,8 +30,6 @@ impl fmt::Display for ConnectionId {
     }
 }
 
-/// Where a profile is stored. New profiles belong to the open project unless
-/// the user makes them global, as in DataGrip.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ConnectionScope {
     #[default]
@@ -49,7 +47,6 @@ pub struct ConnectionProfile {
     /// key order stable, so it diffs cleanly when committed.
     #[serde(default)]
     pub values: BTreeMap<String, String>,
-    /// Folder path in the connections tree, segments separated by `/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     /// Implied by the file the profile was read from, so it is not saved.
@@ -73,9 +70,7 @@ impl ConnectionProfile {
         }
     }
 
-    /// Builds the values a `Driver::connect` call needs, reading password
-    /// fields from `secrets`. Blocks on the secret store, so call it from a
-    /// background task.
+    /// Blocks on the secret store; call it from a background task.
     pub fn form_values(
         &self,
         form: &ConnectionForm,
@@ -98,8 +93,6 @@ impl ConnectionProfile {
     }
 }
 
-/// Everything one scope stores: its profiles and the folders of the
-/// connections tree.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredConnections {
     #[serde(default)]
@@ -120,20 +113,18 @@ pub enum StoreError {
     Secret(String),
 }
 
-/// Persists the profiles and folders of one scope. Implementations block on
-/// I/O; call them from a background task.
+/// Implementations block on I/O; call them from a background task.
 pub trait ConnectionStore: Send + Sync {
     fn scope(&self) -> ConnectionScope;
 
     /// Returned profiles have `scope` set to `self.scope()`.
     fn load(&self) -> Result<StoredConnections, StoreError>;
 
-    /// Replaces everything stored for this scope.
     fn save(&self, stored: &StoredConnections) -> Result<(), StoreError>;
 }
 
-/// Holds password-like form values outside the profile files. Implementations
-/// block (the OS keyring may prompt); call them from a background task.
+/// Implementations block (the OS keyring may prompt); call them from a
+/// background task.
 pub trait SecretStore: Send + Sync {
     fn get(&self, connection: ConnectionId, field: &str) -> Result<Option<String>, StoreError>;
 
@@ -142,8 +133,6 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, connection: ConnectionId, field: &str) -> Result<(), StoreError>;
 }
 
-/// Keeps profiles in memory only; for tests and for UI work before a file
-/// store is wired in.
 pub struct MemoryConnectionStore {
     scope: ConnectionScope,
     stored: Mutex<StoredConnections>,

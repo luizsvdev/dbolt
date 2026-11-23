@@ -3,8 +3,6 @@ use keyring::{Entry, Error as KeyringError};
 
 const SERVICE: &str = "dbolt";
 
-/// Keeps secrets in the OS keyring (Secret Service on Linux, Keychain on
-/// macOS, Credential Manager on Windows), one entry per connection field.
 #[derive(Default)]
 pub struct KeyringSecretStore;
 

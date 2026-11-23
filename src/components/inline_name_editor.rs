@@ -2,14 +2,10 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 
 pub enum InlineNameEvent {
-    /// The trimmed, non-empty name the user entered.
     Confirm(String),
     Cancel,
 }
 
-/// A name field shown in place of a tree row, for creating or renaming an
-/// item in the panel itself. Enter or losing focus confirms; Escape or an
-/// empty name cancels.
 pub struct InlineNameEditor {
     input: Entity<InputState>,
     finished: bool,
@@ -21,9 +17,8 @@ impl EventEmitter<InlineNameEvent> for InlineNameEditor {}
 impl InlineNameEditor {
     pub fn new(initial_name: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).default_value(initial_name));
-        // Deferred because the editor usually opens from a menu, which hands
-        // focus back to its trigger as it closes; focusing now would lose to
-        // that and blur (and so end) the edit at once.
+        // Deferred because a menu that opens the editor hands focus back to
+        // its trigger as it closes, which would blur and end the edit at once.
         window.defer(cx, {
             let input = input.clone();
             move |window, cx| {
@@ -74,10 +69,7 @@ impl InlineNameEditor {
 
 impl Render for InlineNameEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Like Zed's filename editor, the field takes the text style of the
-        // row it sits in (a view renders inside its parent's text style), so
-        // swapping the label for the field changes neither the text nor the
-        // row height.
+        // A view renders inside its parent's text style, so this is the row's.
         let text_style = window.text_style();
         let line_height = window.line_height();
 
@@ -85,9 +77,8 @@ impl Render for InlineNameEditor {
             .flex_1()
             .min_w_0()
             .h(line_height)
-            // The input's frame ends up taller than the line it is given, so
-            // it is centred here; placed from the top, its text sat 2-3px
-            // below the label's.
+            // The input's frame is taller than the height it is given; centring
+            // keeps its text level with the label it replaces.
             .flex()
             .items_center()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
@@ -96,8 +87,6 @@ impl Render for InlineNameEditor {
                     this.finish(InlineNameEvent::Cancel, cx);
                 }
             }))
-            // No border of its own: the row being edited shows the focus
-            // border instead.
             .child(
                 Input::new(&self.input)
                     .appearance(false)

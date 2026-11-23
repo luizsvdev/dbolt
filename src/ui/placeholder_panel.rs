@@ -3,7 +3,6 @@ use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::*;
 
-/// Holds a dock slot until the real panel for it exists.
 pub struct PlaceholderPanel {
     focus_handle: FocusHandle,
     name: &'static str,

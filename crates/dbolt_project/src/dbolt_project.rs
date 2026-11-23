@@ -14,12 +14,10 @@ pub use directory::{DirectoryEntry, is_ignored_name, read_directory};
 pub use recent_projects::RecentProjects;
 pub use secret_store::KeyringSecretStore;
 
-/// Directory, relative to a project root, that holds DBolt's project files.
 pub const PROJECT_DIRECTORY_NAME: &str = ".dbolt";
 
 const CONNECTIONS_FILE_NAME: &str = "connections.json";
 
-/// The user's DBolt configuration directory, for example `~/.config/dbolt`.
 pub fn config_directory() -> Option<PathBuf> {
     dirs::config_dir().map(|directory| directory.join("dbolt"))
 }

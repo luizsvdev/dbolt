@@ -29,7 +29,6 @@ use crate::theme::{ICON_SIZE_SMALL, PANEL_FONT_SIZE, PANEL_FONT_WEIGHT, UI_FONT_
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 const INDENT_PER_DEPTH: Pixels = px(12.);
 const ROW_LEFT_PADDING: Pixels = px(8.);
-/// Zed's row: a 24px line inside a 1px border.
 const ROW_HEIGHT: Pixels = px(24.);
 const PENDING_ID: &str = "\0pending";
 const LOADING_SUFFIX: &str = "\0loading";
@@ -42,7 +41,6 @@ enum DirectoryListing {
     Failed(SharedString),
 }
 
-/// What the inline name field in the tree is for.
 #[derive(Clone)]
 enum EditTarget {
     NewFile { directory: PathBuf },
@@ -51,7 +49,6 @@ enum EditTarget {
 }
 
 impl EditTarget {
-    /// The folder that gets a new row for this edit, if any.
     fn new_item_directory(&self) -> Option<&Path> {
         match self {
             Self::NewFile { directory } | Self::NewFolder { directory } => Some(directory),
@@ -60,7 +57,6 @@ impl EditTarget {
     }
 }
 
-/// What is carried while a file or folder row is dragged.
 struct DraggedPath {
     path: PathBuf,
     name: SharedString,
@@ -78,9 +74,6 @@ enum WatchMessage {
     Failed(String),
 }
 
-/// Shows the files of the open project as a tree. Folders are read on
-/// background tasks the first time they are expanded, and re-read when the
-/// file watcher reports a change in them.
 pub struct ProjectPanel {
     focus_handle: FocusHandle,
     project: Entity<Project>,
@@ -286,7 +279,6 @@ impl ProjectPanel {
             None => Vec::new(),
         };
         self.directory_ids = directory_ids;
-        // Folders removed from disk (or inside a removed folder) are dropped.
         self.directories
             .retain(|path, _| reachable.contains(path));
         self.expanded
@@ -383,8 +375,6 @@ impl ProjectPanel {
             })
     }
 
-    /// Shows a name field in the tree: a new row for a new file or folder,
-    /// or the row itself for a rename.
     fn start_edit(&mut self, target: EditTarget, window: &mut Window, cx: &mut Context<Self>) {
         let initial_name = match &target {
             EditTarget::Rename { path } => path
@@ -460,7 +450,6 @@ impl ProjectPanel {
         });
     }
 
-    /// Moves a dragged file or folder into `directory`.
     fn move_path(
         &mut self,
         path: PathBuf,
@@ -510,8 +499,6 @@ impl ProjectPanel {
         });
     }
 
-    /// Runs a file system change on a background thread, then re-reads the
-    /// `refresh` folders so the tree updates without waiting for the file watcher.
     fn run_file_operation(
         &mut self,
         refresh: Vec<PathBuf>,
@@ -646,10 +633,7 @@ fn render_tree_entry(
         (Some(IconName::File), cx.theme().foreground)
     };
     let guide_color = cx.theme().border;
-    // As in Zed's project panel, every row keeps a border so its content
-    // never moves, and only its colour changes: the focus colour on the
-    // active row (selected or being edited) while the panel holds focus.
-    // A name field only has focus inside its panel, so editing implies it.
+    // The border is always there, so the row never shifts when it is shown.
     let border_color = if editor.is_some() || focused_selection {
         cx.theme().ring
     } else {
@@ -710,8 +694,6 @@ fn render_tree_entry(
             h_flex()
                 .h(ROW_HEIGHT)
                 .pl(ROW_LEFT_PADDING)
-                // Indent guides: one column per ancestor folder, with a line
-                // under that folder's icon. Rows touch, so the lines join up.
                 .children((0..entry.depth()).map(|_| {
                     div()
                         .flex_none()
@@ -752,8 +734,6 @@ fn render_tree_entry(
         )
 }
 
-/// Menu for a tree row: `path` is the row's file or folder, and new items go
-/// in `directory` (the folder itself, or a file's parent).
 fn entry_menu(
     panel: &WeakEntity<ProjectPanel>,
     path: PathBuf,
@@ -869,7 +849,6 @@ fn validate_file_name(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Renames within the same folder.
 fn rename_entry(path: &Path, name: &str) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("Cannot rename {}", path.display()));
