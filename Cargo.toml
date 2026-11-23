@@ -10,5 +10,9 @@ members = ["crates/*"]
 anyhow = "1.0.104"
 dbolt_database = { version = "0.1.0", path = "crates/dbolt_database" }
 dbolt_postgres = { version = "0.1.0", path = "crates/dbolt_postgres" }
+dbolt_project = { version = "0.1.0", path = "crates/dbolt_project" }
+futures = "0.3.34"
 gpui-kit = { version = "0.10.0", features = ["tree-sitter-sql"] }
+notify = "8.2.2"
 rust-embed = { version = "8.12.0", features = ["include-exclude"] }
+trash = "5.4.0"

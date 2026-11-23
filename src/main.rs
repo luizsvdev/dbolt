@@ -1,4 +1,6 @@
+mod assets;
 mod components;
+mod project;
 mod theme;
 mod ui;
 mod workspace;
@@ -10,14 +12,16 @@ use gpui_kit::{
     *,
 };
 
+use theme::{RADIUS_BUTTON, UI_FONT_FAMILY};
 use workspace::Workspace;
 
 fn load_fonts(cx: &mut App) {
     Theme::update(cx, |theme| {
-        theme.font_family = "IBM Plex Sans".into();
+        theme.font_family = UI_FONT_FAMILY.into();
         theme.font_size = rems(0.8).to_pixels(px(16.));
         theme.mono_font_family = "Lilex".into();
         theme.mono_font_size = rems(1.).to_pixels(px(16.));
+        theme.radius = RADIUS_BUTTON;
     });
 }
 
@@ -30,7 +34,12 @@ fn load_theme(cx: &mut App) {
             .get(&theme_name)
             .cloned()
         {
-            Theme::update(cx, |current| current.apply_config(&theme));
+            Theme::update(cx, |current| {
+                current.apply_config(&theme);
+                // Library widgets such as the app menu bar take their corner
+                // radius from the theme; keep them in line with our buttons.
+                current.radius = RADIUS_BUTTON;
+            });
         }
     }) {
         eprintln!("failed to load themes: {error:#}");
@@ -39,7 +48,7 @@ fn load_theme(cx: &mut App) {
 
 fn main() {
     application()
-        .with_assets(assets::Assets)
+        .with_assets(assets::AppAssets)
         .run(|cx| {
             init(cx);
             load_fonts(cx);
