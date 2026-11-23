@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use dbolt_database::DriverRegistry;
+use dbolt_postgres::PostgresDriver;
 use gpui_kit::base::dock::DockPlacement;
 use gpui_kit::base::v_flex;
 use gpui_kit::component::dock::panel_handle;
@@ -33,7 +37,12 @@ impl Workspace {
         });
         let (dock_area, _dock_skin) = DockSkin::dock_area("main-dock", Some(1), window, cx);
 
-        let connections_panel = cx.new(|cx| ConnectionsPanel::new(window, cx));
+        let mut registry = DriverRegistry::new();
+        registry.register(Arc::new(PostgresDriver::new()));
+        let registry = Arc::new(registry);
+
+        let connections_panel =
+            cx.new(|cx| ConnectionsPanel::new(registry, project.clone(), window, cx));
         let project_panel = cx.new(|cx| ProjectPanel::new(project.clone(), cx));
         let editor_placeholder = cx.new(|cx| PlaceholderPanel::new("EditorPanel", "Editor", cx));
         let results_placeholder = cx.new(|cx| PlaceholderPanel::new("ResultsPanel", "Results", cx));

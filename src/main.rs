@@ -3,6 +3,7 @@ mod components;
 mod project;
 mod theme;
 mod ui;
+mod util;
 mod workspace;
 
 use std::path::PathBuf;

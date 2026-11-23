@@ -1,3 +1,5 @@
+pub mod connection_dialog;
+pub mod connection_tree;
 pub mod connections_panel;
 pub mod placeholder_panel;
 pub mod project_panel;
