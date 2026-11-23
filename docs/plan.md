@@ -47,40 +47,65 @@ Rules that apply to every phase (see `.rules`):
 
 **Done when:** a PostgreSQL connection can be created, tested, connected and browsed down to its tables; a wrong password or unreachable host shows a clear error.
 
-## Phase 3 — SQL editor and tabs (2–3 sessions)
+## Phase 3 — SQL editor and tabs (done)
 
 **Goal:** edit and run SQL in tabs.
 
-- [ ] Enable gpui-kit's `tree-sitter-sql` feature; code editor input with line numbers and SQL highlighting
-- [ ] Tab bar in the center area: new, close, switch; dirty marker and confirm on close
-- [ ] Open and save `.sql` files from the project panel
-- [ ] Per-tab connection (and database/schema) selector
-- [ ] Run statement under cursor / selection (⌘↵ / Ctrl+↵) on a background task; the task is stored on the tab so closing the tab or pressing cancel drops it
+- [x] gpui-kit's `tree-sitter-sql` feature; code editor with line numbers and SQL highlighting, in the buffer font (Lilex 15px, line height 1.618, ligatures)
+- [x] Tab bar in the center area: new, close, switch; dirty marker and confirm on close; hidden when no tab is open
+- [x] Open `.sql` files from the project panel (double-click) and save them (Ctrl+S, with a save dialog for new tabs)
+- [x] Per-tab connection selector, showing which connections are live
+- [x] Run the statement under the cursor, or every statement in the selection (Ctrl+Enter), or the whole file (Ctrl+Shift+Enter); statements run one after another and stop at the first error
+- [x] The run is stored on the tab, so closing the tab or pressing Cancel stops it
+- [x] Running without a connection opens the connection menu (arrow keys and Enter) and runs once one is picked; a connection that is not connected is connected first
+- [x] "New Query" from the connections panel menus opens a tab on that connection
+- [ ] Per-tab database/schema selector
 
-**Likely touched:** new `src/ui/editor.rs` (editor pane and tabs), `src/workspace.rs`, `Cargo.toml` (feature flag).
+**Touched:** `src/ui/editor_panel.rs`, `src/sql_statements.rs` (statement splitting), `src/query_execution.rs` (`QueryRun`, `QueryExecution`), `src/ui/connections_panel.rs`, `src/ui/project_panel.rs`, `src/workspace.rs`.
 
-**Done when:** several tabs can each run SQL against different connections; closing a tab cancels its running query.
+**Open issues:**
 
-## Phase 4 — Bottom panel: result grid and console (3–4 sessions)
+- Cancel stops waiting, but the query keeps running on the server (needs the driver's cancel token).
+- Closing the app with unsaved tabs gives no prompt.
+- "Save As" does not check whether another tab already has that file open.
+- Enter on a file row does not open it; only double-click does.
+
+## Phase 4 — Bottom panel: results and output (done)
 
 **Goal:** see query results and what happened.
 
-Result grid (2–3 sessions):
+The result grid and console became one DataGrip-style panel: the consoles that ran (one per editor tab, grouped by connection, with the last run's duration) on the left, and on the right a fixed Output tab plus one tab per `SELECT` of the latest run.
 
-- [ ] Table delegate over `QueryResult`; only visible rows and cells are rendered
-- [ ] Paging through `has_more` / `load_more` instead of loading the whole result
-- [ ] Values colored by type per the DBolt design system (numbers orange and right-aligned, booleans purple, dates cyan, JSON green, NULL italic grey)
-- [ ] Row count and timing in the panel header; SQL errors shown in place of the grid
-- [ ] One result tab per executed statement
+Result grid:
 
-Console / log (1 session):
+- [x] gpui-kit `DataTable` over the execution's rows; only visible rows and cells are rendered
+- [x] Server-side cursor paging in PostgreSQL (`DECLARE` / `FETCH`, 500 rows a page), loading more while scrolling
+- [x] Values colored by type per the DBolt design system (numbers orange and right-aligned, booleans purple, dates cyan, JSON green, NULL italic grey), mono cell font
+- [x] Design system layout: 24px rows, 26px header with the column type and primary/foreign key icons (keys read from `pg_constraint`), row numbers, cell borders, editor background
+- [x] Drag, row and column selection with row highlighting; Copy Value and Copy as CSV (with column names) from the right-click menu, Ctrl+C for CSV
+- [x] Row count and timing above the grid
+- [x] One result tab per `SELECT` of the latest run, titled `database.schema.table` from its `FROM`; each run replaces them
 
-- [ ] Virtualized list of query history and server messages, with timestamps and durations
-- [ ] Click an entry to copy or reopen the statement
+Output (replaces the console):
 
-**Likely touched:** new `src/ui/results_panel.rs`, new `src/ui/console.rs`, `src/workspace.rs` (bottom dock), `crates/dbolt_database/src/query.rs` (paging support), `crates/dbolt_postgres`.
+- [x] Log of every statement with its timestamp, then its outcome (rows retrieved, rows affected or the error) and duration
+- [x] SQL highlighting, grey timestamps, colored prompt and red errors; selectable text with Copy and Select All; buffer font
+- [x] Consoles can be closed from their right-click menu
+- [ ] Server messages (`NOTICE`) and a "Connected to …" line
+- [ ] Execution time separate from fetching time
 
-**Done when:** a query returning 1,000,000 rows scrolls smoothly without loading everything into memory; errors and timings appear in the grid and the console.
+Panel:
+
+- [x] Bottom panel toggle in the status bar; a close button in the panel; the panel opens when a run starts
+
+**Touched:** `src/ui/results_panel.rs`, `src/query_execution.rs`, `src/workspace.rs`, `src/ui/status_bar.rs`, `crates/dbolt_database/src/query.rs` (`QueryCursor`, `ColumnKey`), `crates/dbolt_postgres`, `themes/*.json` (table background).
+
+**Open issues:**
+
+- A connection keeps one open cursor: when a run has several `SELECT`s, a later one stops the earlier result from loading more rows than it already has.
+- Loaded rows stay in memory, so scrolling to the end of a huge result keeps every row.
+- Dragging a selection does not scroll the grid; a column selection covers only the loaded rows.
+- The output prompt shows the database, not the current schema.
 
 ## Phase 5 — Later stage (NOT part of the current work)
 
@@ -102,9 +127,8 @@ These are explicitly postponed until phases 1–4 are complete.
 | --- | --- | --- |
 | 1. Project context | 3–4 | current |
 | 2. Connections panel | 3–4 | current |
-| 3. SQL editor and tabs | 2–3 | current |
-| 4. Result grid | 2–3 | current |
-| 4. Console / log | 1 | current |
+| 3. SQL editor and tabs | 2–3 | done |
+| 4. Results and output | 3–4 | done |
 | 5. Terminal | 5–8 | later |
 | 5. Autocomplete | large | later |
 
