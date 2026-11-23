@@ -51,6 +51,7 @@ impl Workspace {
         let results_panel = cx.new(|cx| ResultsPanel::new(dock_area.downgrade(), cx));
         let executions = cx.subscribe_in(&editor_panel, window, {
             let results_panel = results_panel.clone();
+            let connections_panel = connections_panel.clone();
             let dock_area = dock_area.clone();
             move |_, _, event, window, cx| match event {
                 EditorPanelEvent::RunStarted(console_run) => {
@@ -61,6 +62,10 @@ impl Workspace {
                         }
                     });
                 }
+                EditorPanelEvent::ConnectRequested(connection) => {
+                    connections_panel
+                        .update(cx, |panel, cx| panel.connect(*connection, window, cx));
+                }
             }
         });
 
@@ -69,6 +74,14 @@ impl Workspace {
             move |_, _, event, window, cx| match event {
                 ConnectionsPanelEvent::NewQuery(connection) => {
                     editor_panel.update(cx, |panel, cx| panel.new_query(*connection, window, cx));
+                }
+                ConnectionsPanelEvent::ConnectFinished {
+                    connection,
+                    connected,
+                } => {
+                    editor_panel.update(cx, |panel, cx| {
+                        panel.connection_finished(*connection, *connected, window, cx)
+                    });
                 }
             }
         });

@@ -271,13 +271,22 @@ impl ConnectionsPanel {
         }
     }
 
-    fn connect(&mut self, connection: ConnectionId, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn connect(
+        &mut self,
+        connection: ConnectionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let registry = self.registry.clone();
         let secret_store = self
             .project
             .read(cx)
             .secret_store();
         let Some(entry) = self.entry_mut(connection) else {
+            cx.emit(ConnectionsPanelEvent::ConnectFinished {
+                connection,
+                connected: false,
+            });
             return;
         };
         if matches!(
@@ -294,6 +303,10 @@ impl ConnectionsPanel {
             let message = format!("No driver named \"{}\" is installed", profile.driver_id);
             entry.status = ConnectionStatus::Failed(message.clone());
             self.rebuild_tree(cx);
+            cx.emit(ConnectionsPanelEvent::ConnectFinished {
+                connection,
+                connected: false,
+            });
             notify_error(
                 &format!("Could not connect to {}", profile.name),
                 message,
@@ -334,6 +347,10 @@ impl ConnectionsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        cx.emit(ConnectionsPanelEvent::ConnectFinished {
+            connection,
+            connected: result.is_ok(),
+        });
         let Some(entry) = self.entry_mut(connection) else {
             return;
         };
@@ -1200,6 +1217,10 @@ fn context_menu(
 
 pub enum ConnectionsPanelEvent {
     NewQuery(Option<ConnectionId>),
+    ConnectFinished {
+        connection: ConnectionId,
+        connected: bool,
+    },
 }
 
 impl EventEmitter<PanelEvent> for ConnectionsPanel {}

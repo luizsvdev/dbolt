@@ -9,8 +9,9 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
-use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::popover::Popover;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, IconName, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
@@ -85,6 +86,15 @@ pub struct ConsoleRun {
 
 pub enum EditorPanelEvent {
     RunStarted(ConsoleRun),
+    /// A run needs this connection, which is not connected yet.
+    ConnectRequested(ConnectionId),
+}
+
+/// A run waiting for its connection to connect.
+struct PendingRun {
+    tab: TabId,
+    connection: ConnectionId,
+    whole_file: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -124,6 +134,15 @@ impl EditorTab {
     }
 }
 
+struct ConnectionMenu {
+    tab: TabId,
+    menu: Entity<PopupMenu>,
+    /// Set when the menu opened because a run had no connection; picking one
+    /// then runs it (`true` for the whole file).
+    run_after_pick: Option<bool>,
+    _dismiss: Subscription,
+}
+
 pub struct EditorPanel {
     focus_handle: FocusHandle,
     project: Entity<Project>,
@@ -133,6 +152,8 @@ pub struct EditorPanel {
     next_tab_id: usize,
     next_untitled_number: usize,
     open_tasks: HashMap<PathBuf, Task<()>>,
+    connection_menu: Option<ConnectionMenu>,
+    pending_run: Option<PendingRun>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -152,6 +173,8 @@ impl EditorPanel {
             next_tab_id: 0,
             next_untitled_number: 1,
             open_tasks: HashMap::new(),
+            connection_menu: None,
+            pending_run: None,
             _subscriptions: subscriptions,
         }
     }
@@ -349,6 +372,136 @@ impl EditorPanel {
         cx.notify();
     }
 
+    /// Runs what was waiting for `connection`, or drops it when connecting
+    /// failed (the connections panel reports the error).
+    pub fn connection_finished(
+        &mut self,
+        connection: ConnectionId,
+        connected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self
+            .pending_run
+            .take_if(|pending| pending.connection == connection)
+        else {
+            return;
+        };
+        if connected
+            && self
+                .tab(pending.tab)
+                .is_some_and(|tab| tab.connection == Some(connection))
+        {
+            self.run_tab(pending.tab, pending.whole_file, window, cx);
+        }
+    }
+
+    fn open_connection_menu(
+        &mut self,
+        run_after_pick: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.active() else {
+            return;
+        };
+        let tab_id = tab.id;
+        let current = tab.connection;
+        let project = self.project.read(cx);
+        let choices: Vec<(ConnectionId, SharedString, bool)> = project
+            .connections()
+            .iter()
+            .map(|profile| {
+                (
+                    profile.id,
+                    SharedString::from(profile.name.clone()),
+                    project
+                        .live_connection(profile.id)
+                        .is_some(),
+                )
+            })
+            .collect();
+        let live_color = cx.theme().success;
+        let idle_color = cx.theme().muted_foreground;
+        let panel = cx.weak_entity();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            if choices.is_empty() {
+                return menu.item(PopupMenuItem::label("No connections"));
+            }
+            choices
+                .into_iter()
+                .fold(menu, |menu, (connection, name, live)| {
+                    let color = if live { live_color } else { idle_color };
+                    let panel = panel.clone();
+                    menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(status_dot(color))
+                                .child(name.clone())
+                        })
+                        .checked(current == Some(connection))
+                        .on_click(move |_, window, cx| {
+                            panel
+                                .update(cx, |this, cx| {
+                                    this.pick_connection(tab_id, connection, window, cx)
+                                })
+                                .log_err();
+                        }),
+                    )
+                })
+        });
+        menu.focus_handle(cx)
+            .focus(window, cx);
+        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+            this.close_connection_menu(window, cx)
+        });
+        self.connection_menu = Some(ConnectionMenu {
+            tab: tab_id,
+            menu,
+            run_after_pick,
+            _dismiss: dismiss,
+        });
+        cx.notify();
+    }
+
+    fn close_connection_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .connection_menu
+            .take()
+            .is_none()
+        {
+            return;
+        }
+        if let Some(tab) = self.active() {
+            tab.editor
+                .update(cx, |editor, cx| editor.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn pick_connection(
+        &mut self,
+        tab_id: TabId,
+        connection: ConnectionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let run_after_pick = self
+            .connection_menu
+            .as_ref()
+            .filter(|menu| menu.tab == tab_id)
+            .and_then(|menu| menu.run_after_pick);
+        self.set_connection(tab_id, connection, cx);
+        self.close_connection_menu(window, cx);
+        if let Some(whole_file) = run_after_pick
+            && self.active_tab == Some(tab_id)
+        {
+            self.run(whole_file, window, cx);
+        }
+    }
+
     fn set_connection(&mut self, id: TabId, connection: ConnectionId, cx: &mut Context<Self>) {
         if let Some(tab) = self.tab_mut(id) {
             tab.connection = Some(connection);
@@ -453,10 +606,21 @@ impl EditorPanel {
     }
 
     fn run(&mut self, whole_file: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.active() else {
+        if let Some(id) = self.active_tab {
+            self.run_tab(id, whole_file, window, cx);
+        }
+    }
+
+    fn run_tab(
+        &mut self,
+        id: TabId,
+        whole_file: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.tab(id) else {
             return;
         };
-        let id = tab.id;
         if tab.is_running(cx) {
             show_error(
                 "A statement is already running in this tab. Cancel it first.",
@@ -466,7 +630,7 @@ impl EditorPanel {
             return;
         }
         let Some(connection_id) = tab.connection else {
-            show_error("Choose a connection for this tab first.", window, cx);
+            self.open_connection_menu(Some(whole_file), window, cx);
             return;
         };
         let project = self.project.read(cx);
@@ -489,13 +653,12 @@ impl EditorPanel {
             .filter(|database| !database.is_empty())
             .map(|database| SharedString::from(database.clone()));
         let Some(connection) = project.live_connection(connection_id) else {
-            show_error(
-                format!(
-                    "\"{connection_name}\" is not connected. Connect it in the Connections panel first."
-                ),
-                window,
-                cx,
-            );
+            self.pending_run = Some(PendingRun {
+                tab: id,
+                connection: connection_id,
+                whole_file,
+            });
+            cx.emit(EditorPanelEvent::ConnectRequested(connection_id));
             return;
         };
         let console_name = tab.title.clone();
@@ -742,23 +905,15 @@ impl EditorPanel {
             Some((name, live)) => (name, live),
             None => (SharedString::from("No connection"), false),
         };
-        let choices: Vec<(ConnectionId, SharedString, bool)> = project
-            .connections()
-            .iter()
-            .map(|profile| {
-                (
-                    profile.id,
-                    SharedString::from(profile.name.clone()),
-                    project
-                        .live_connection(profile.id)
-                        .is_some(),
-                )
-            })
-            .collect();
-        let tab_id = tab.id;
-        let current = tab.connection;
         let live_color = theme.success;
         let idle_color = theme.muted_foreground;
+        let open_menu = self
+            .connection_menu
+            .as_ref()
+            .map(|menu| menu.menu.clone());
+        let menu_focus = open_menu
+            .as_ref()
+            .map(|menu| menu.focus_handle(cx));
 
         let run_buttons = if tab.is_running(cx) {
             h_flex().child(
@@ -796,44 +951,42 @@ impl EditorPanel {
             .border_color(theme.border)
             .child(run_buttons)
             .child(
-                Button::new("connection-selector")
-                    .label(connection_label)
-                    .label_size(LABEL_SIZE_SMALL)
-                    .style(ButtonStyle::Subtle)
-                    .prefix(status_dot(if connection_live {
-                        live_color
-                    } else {
-                        idle_color
-                    }))
-                    .dropdown_menu(move |menu: PopupMenu, _, _| {
-                        if choices.is_empty() {
-                            return menu.item(PopupMenuItem::label("No connections"));
-                        }
-                        choices
-                            .iter()
-                            .fold(menu, |menu, (connection, name, live)| {
-                                let connection = *connection;
-                                let name = name.clone();
-                                let color = if *live { live_color } else { idle_color };
-                                let panel = panel.clone();
-                                menu.item(
-                                    PopupMenuItem::element(move |_, _| {
-                                        h_flex()
-                                            .gap_2()
-                                            .items_center()
-                                            .child(status_dot(color))
-                                            .child(name.clone())
-                                    })
-                                    .checked(current == Some(connection))
-                                    .on_click(move |_, _, cx| {
-                                        panel
-                                            .update(cx, |this, cx| {
-                                                this.set_connection(tab_id, connection, cx)
-                                            })
-                                            .log_err();
-                                    }),
-                                )
+                Popover::new("connection-menu")
+                    .appearance(false)
+                    .overlay_closable(false)
+                    .anchor(Anchor::TopRight)
+                    .open(open_menu.is_some())
+                    // The popover focuses a handle of its own when it opens;
+                    // giving it the menu's keeps the arrow keys and Enter there.
+                    .when_some(menu_focus, |this, focus| this.track_focus(&focus))
+                    .on_open_change(move |open, window, cx| {
+                        let open = *open;
+                        panel
+                            .update(cx, |this, cx| {
+                                if open {
+                                    this.open_connection_menu(None, window, cx);
+                                } else {
+                                    this.close_connection_menu(window, cx);
+                                }
                             })
+                            .log_err();
+                    })
+                    .trigger(
+                        Button::new("connection-selector")
+                            .label(connection_label)
+                            .label_size(LABEL_SIZE_SMALL)
+                            .style(ButtonStyle::Subtle)
+                            .prefix(status_dot(if connection_live {
+                                live_color
+                            } else {
+                                idle_color
+                            })),
+                    )
+                    .content(move |_, _, _| match &open_menu {
+                        Some(menu) => menu
+                            .clone()
+                            .into_any_element(),
+                        None => div().into_any_element(),
                     }),
             )
     }
