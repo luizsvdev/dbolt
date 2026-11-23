@@ -1,5 +1,6 @@
 mod assets;
 mod components;
+mod line_edits;
 mod project;
 mod query_execution;
 mod sql_statements;

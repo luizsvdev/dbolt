@@ -23,6 +23,7 @@ const HORIZONTAL_PADDING: Pixels = px(4.);
 pub struct Button {
     base: Stateful<Div>,
     prefix: Option<AnyElement>,
+    suffix: Option<AnyElement>,
     label: Option<SharedString>,
     label_size: Option<Pixels>,
     style: ButtonStyle,
@@ -35,6 +36,7 @@ impl Button {
         Self {
             base: div().id(id),
             prefix: None,
+            suffix: None,
             label: None,
             label_size: None,
             style: ButtonStyle::default(),
@@ -45,6 +47,11 @@ impl Button {
 
     pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
         self.prefix = Some(prefix.into_any_element());
+        self
+    }
+
+    pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
+        self.suffix = Some(suffix.into_any_element());
         self
     }
 
@@ -151,6 +158,7 @@ impl RenderOnce for Button {
             .on_any_mouse_down(|_, window, _| window.prevent_default())
             .children(self.prefix)
             .when_some(self.label, |this, label| this.child(label))
+            .children(self.suffix)
             .when_some(self.on_click, |this, handler| this.on_click(handler))
     }
 }

@@ -14,6 +14,7 @@ pub const EDITOR_LINE_HEIGHT: f32 = 1.618;
 
 pub const RADIUS_BUTTON: Pixels = px(4.0);
 pub const LABEL_SIZE_SMALL: Pixels = px(12.0);
+pub const ICON_SIZE_XSMALL: Pixels = px(12.0);
 pub const ICON_SIZE_SMALL: Pixels = px(14.0);
 pub const ICON_SIZE_MEDIUM: Pixels = px(16.0);
 pub const PANEL_HEADER_HEIGHT: Pixels = px(32.0);

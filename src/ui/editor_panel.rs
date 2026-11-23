@@ -1,30 +1,33 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use dbolt_database::ConnectionId;
 use gpui_kit::assets::IconName as AssetIconName;
+use gpui_kit::base::Selectable;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::ButtonVariant;
-use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
+use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent, ToggleZoom};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, IconName, WindowExt};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, WindowExt};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::components::button::{Button, ButtonStyle};
 use crate::components::icon_button::IconButton;
+use crate::components::styled_editor::StyledEditor;
+use crate::line_edits::{self, LineEdit};
 use crate::project::{Project, ProjectEvent};
 use crate::query_execution::QueryRun;
 use crate::sql_statements::{all_statements, statements_to_run};
 use crate::theme::{
-    EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE, EDITOR_FONT_WEIGHT, EDITOR_LINE_HEIGHT, LABEL_SIZE_SMALL,
-    PANEL_HEADER_HEIGHT, editor_background, editor_font_features,
+    EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE, EDITOR_FONT_WEIGHT, EDITOR_LINE_HEIGHT, ICON_SIZE_XSMALL,
+    LABEL_SIZE_SMALL, PANEL_HEADER_HEIGHT, editor_background, editor_font_features,
 };
 use crate::util::ResultExt;
 
@@ -43,28 +46,78 @@ actions!(
         RunAll,
         /// Cancels the statement running in the active tab.
         CancelExecution,
+        /// Comments or uncomments the selected lines.
+        ToggleComment,
+        /// Moves the selected lines up.
+        MoveLinesUp,
+        /// Moves the selected lines down.
+        MoveLinesDown,
+        /// Duplicates the selected lines.
+        DuplicateLines,
+        /// Deletes the selected lines.
+        DeleteLines,
+        /// Goes back to the previously active query tab.
+        GoBack,
+        /// Goes forward again after going back.
+        GoForward,
     ]
 );
 
 const KEY_CONTEXT: &str = "EditorPanel";
 const STATUS_DOT_SIZE: Pixels = px(6.);
-const TAB_SLOT_SIZE: Pixels = px(18.);
+const TAB_BAR_HEIGHT: Pixels = px(32.);
+const TAB_START_SLOT_SIZE: Pixels = px(12.);
+const TAB_END_SLOT_SIZE: Pixels = px(14.);
+const TAB_CONTENT_GAP: Pixels = px(4.);
+const TAB_GROUP: &str = "editor-tab";
 
 // `KeyBinding::new` cannot parse the `secondary` modifier, which needs the
 // platform to resolve.
 #[cfg(target_os = "macos")]
-const KEYS: [&str; 5] = ["cmd-n", "cmd-w", "cmd-s", "cmd-enter", "cmd-shift-enter"];
+const KEYS: [&str; 9] = [
+    "cmd-n",
+    "cmd-w",
+    "cmd-s",
+    "cmd-enter",
+    "cmd-shift-enter",
+    "cmd-/",
+    "cmd-d",
+    "cmd-shift-k",
+    "alt-up",
+];
 #[cfg(not(target_os = "macos"))]
-const KEYS: [&str; 5] = [
+const KEYS: [&str; 9] = [
     "ctrl-n",
     "ctrl-w",
     "ctrl-s",
     "ctrl-enter",
     "ctrl-shift-enter",
+    "ctrl-/",
+    "ctrl-d",
+    "ctrl-shift-k",
+    "alt-up",
 ];
 
+#[cfg(target_os = "macos")]
+const NAVIGATION_KEYS: [&str; 2] = ["ctrl--", "ctrl-_"];
+#[cfg(not(target_os = "macos"))]
+const NAVIGATION_KEYS: [&str; 2] = ["ctrl-alt--", "ctrl-alt-_"];
+
+const TAB_BAR_SECTION_GAP: Pixels = px(4.);
+const TAB_BAR_SECTION_PADDING: Pixels = px(6.);
+
 pub fn init(cx: &mut App) {
-    let [new_query, close_tab, save_file, run_statement, run_all] = KEYS;
+    let [
+        new_query,
+        close_tab,
+        save_file,
+        run_statement,
+        run_all,
+        toggle_comment,
+        duplicate_lines,
+        delete_lines,
+        move_lines_up,
+    ] = KEYS;
     cx.bind_keys([
         KeyBinding::new(new_query, NewQuery, Some(KEY_CONTEXT)),
         KeyBinding::new(close_tab, CloseTab, Some(KEY_CONTEXT)),
@@ -73,6 +126,13 @@ pub fn init(cx: &mut App) {
         // so this binding still runs while the editor has focus.
         KeyBinding::new(run_statement, RunStatement, Some(KEY_CONTEXT)),
         KeyBinding::new(run_all, RunAll, Some(KEY_CONTEXT)),
+        KeyBinding::new(toggle_comment, ToggleComment, Some(KEY_CONTEXT)),
+        KeyBinding::new(duplicate_lines, DuplicateLines, Some(KEY_CONTEXT)),
+        KeyBinding::new(delete_lines, DeleteLines, Some(KEY_CONTEXT)),
+        KeyBinding::new(move_lines_up, MoveLinesUp, Some(KEY_CONTEXT)),
+        KeyBinding::new("alt-down", MoveLinesDown, Some(KEY_CONTEXT)),
+        KeyBinding::new(NAVIGATION_KEYS[0], GoBack, Some(KEY_CONTEXT)),
+        KeyBinding::new(NAVIGATION_KEYS[1], GoForward, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -148,33 +208,74 @@ pub struct EditorPanel {
     project: Entity<Project>,
     tabs: Vec<EditorTab>,
     active_tab: Option<TabId>,
-    hovered_tab: Option<TabId>,
     next_tab_id: usize,
     next_untitled_number: usize,
     open_tasks: HashMap<PathBuf, Task<()>>,
     connection_menu: Option<ConnectionMenu>,
     pending_run: Option<PendingRun>,
+    /// Tabs that were active before, most recent last.
+    nav_back: Vec<TabId>,
+    nav_forward: Vec<TabId>,
+    dock_area: WeakEntity<DockArea>,
     _subscriptions: Vec<Subscription>,
 }
 
+#[derive(Clone)]
+struct DraggedEditorTab {
+    id: TabId,
+    index: usize,
+    title: SharedString,
+}
+
+impl Render for DraggedEditorTab {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        h_flex()
+            .h(TAB_BAR_HEIGHT)
+            .px(TAB_CONTENT_GAP)
+            .gap(TAB_CONTENT_GAP)
+            .bg(theme.tab_active)
+            .border_1()
+            .border_color(theme.border)
+            .text_color(theme.tab_active_foreground)
+            .child(div().size(TAB_START_SLOT_SIZE))
+            .child(self.title.clone())
+            .child(div().size(TAB_END_SLOT_SIZE))
+    }
+}
+
 impl EditorPanel {
-    pub fn new(project: Entity<Project>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let subscriptions = vec![cx.subscribe(&project, |_, _, event, cx| match event {
-            ProjectEvent::ConnectionsChanged | ProjectEvent::LiveConnectionsChanged => cx.notify(),
-            ProjectEvent::Opened | ProjectEvent::RecentProjectsChanged | ProjectEvent::Error(_) => {
-            }
-        })];
+    pub fn new(
+        project: Entity<Project>,
+        dock_area: &Entity<DockArea>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subscriptions = vec![
+            cx.subscribe(&project, |_, _, event, cx| match event {
+                ProjectEvent::ConnectionsChanged | ProjectEvent::LiveConnectionsChanged => {
+                    cx.notify()
+                }
+                ProjectEvent::Opened
+                | ProjectEvent::RecentProjectsChanged
+                | ProjectEvent::Error(_) => {}
+            }),
+            // Redraws the zoom button when the dock zooms in or out.
+            cx.observe(dock_area, |_, _, cx| cx.notify()),
+        ];
         Self {
             focus_handle: cx.focus_handle(),
             project,
             tabs: Vec::new(),
             active_tab: None,
-            hovered_tab: None,
             next_tab_id: 0,
             next_untitled_number: 1,
             open_tasks: HashMap::new(),
             connection_menu: None,
             pending_run: None,
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
+            dock_area: dock_area.downgrade(),
             _subscriptions: subscriptions,
         }
     }
@@ -306,6 +407,66 @@ impl EditorPanel {
     }
 
     fn activate_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self
+            .active_tab
+            .filter(|previous| *previous != id)
+        {
+            self.nav_back.push(previous);
+            self.nav_forward.clear();
+        }
+        self.show_tab(id, window, cx);
+    }
+
+    fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.nav_back.pop() {
+            if let Some(current) = self.active_tab {
+                self.nav_forward.push(current);
+            }
+            self.show_tab(id, window, cx);
+        }
+    }
+
+    fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.nav_forward.pop() {
+            if let Some(current) = self.active_tab {
+                self.nav_back.push(current);
+            }
+            self.show_tab(id, window, cx);
+        }
+    }
+
+    /// Moves a tab to `index`, which is where it was dropped: the tabs from
+    /// there on shift right.
+    fn move_tab(&mut self, id: TabId, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(from) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == id)
+        else {
+            return;
+        };
+        let tab = self.tabs.remove(from);
+        let to = index.min(self.tabs.len());
+        self.tabs.insert(to, tab);
+        self.activate_tab(id, window, cx);
+    }
+
+    fn toggle_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The dock's handler reads this panel, so the action must not be
+        // dispatched while the panel is being updated.
+        let focus_handle = self.focus_handle.clone();
+        window.defer(cx, move |window, cx| {
+            focus_handle.dispatch_action(&ToggleZoom, window, cx)
+        });
+    }
+
+    fn is_zoomed(&self, cx: &App) -> bool {
+        self.dock_area
+            .upgrade()
+            .is_some_and(|area| area.read(cx).is_zoomed())
+    }
+
+    fn show_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tab(id) else {
             return;
         };
@@ -351,11 +512,12 @@ impl EditorPanel {
             return;
         };
         let tab = self.tabs.remove(index);
+        self.nav_back
+            .retain(|previous| *previous != id);
+        self.nav_forward
+            .retain(|next| *next != id);
         if let Some(run) = &tab.run {
             run.update(cx, |run, cx| run.cancel(cx));
-        }
-        if self.hovered_tab == Some(id) {
-            self.hovered_tab = None;
         }
         if self.active_tab == Some(id) {
             self.active_tab = None;
@@ -365,7 +527,7 @@ impl EditorPanel {
                 .or_else(|| self.tabs.last())
                 .map(|tab| tab.id);
             match neighbour {
-                Some(neighbour) => self.activate_tab(neighbour, window, cx),
+                Some(neighbour) => self.show_tab(neighbour, window, cx),
                 None => window.focus(&self.focus_handle, cx),
             }
         }
@@ -727,6 +889,70 @@ impl EditorPanel {
         self.run(true, window, cx);
     }
 
+    fn on_go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_back(window, cx);
+    }
+
+    fn on_go_forward(&mut self, _: &GoForward, window: &mut Window, cx: &mut Context<Self>) {
+        self.go_forward(window, cx);
+    }
+
+    fn edit_lines(
+        &mut self,
+        edit: fn(&str, Range<usize>) -> Option<LineEdit>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.active() else {
+            return;
+        };
+        let editor = tab.editor.clone();
+        editor.update(cx, |editor, cx| {
+            let text = editor.value();
+            let Some(edit) = edit(&text, editor.selected_range()) else {
+                return;
+            };
+            editor.set_selected_range(edit.replace, cx);
+            editor.replace(edit.text, window, cx);
+            editor.set_selected_range(edit.selection, cx);
+        });
+    }
+
+    fn on_toggle_comment(
+        &mut self,
+        _: &ToggleComment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_lines(line_edits::toggle_comment, window, cx);
+    }
+
+    fn on_move_lines_up(&mut self, _: &MoveLinesUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_lines(line_edits::move_lines_up, window, cx);
+    }
+
+    fn on_move_lines_down(
+        &mut self,
+        _: &MoveLinesDown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_lines(line_edits::move_lines_down, window, cx);
+    }
+
+    fn on_duplicate_lines(
+        &mut self,
+        _: &DuplicateLines,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit_lines(line_edits::duplicate_lines, window, cx);
+    }
+
+    fn on_delete_lines(&mut self, _: &DeleteLines, window: &mut Window, cx: &mut Context<Self>) {
+        self.edit_lines(line_edits::delete_lines, window, cx);
+    }
+
     fn on_cancel(&mut self, _: &CancelExecution, _: &mut Window, cx: &mut Context<Self>) {
         self.cancel_execution(cx);
     }
@@ -776,6 +1002,13 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_run))
             .on_action(cx.listener(Self::on_run_all))
+            .on_action(cx.listener(Self::on_go_back))
+            .on_action(cx.listener(Self::on_go_forward))
+            .on_action(cx.listener(Self::on_toggle_comment))
+            .on_action(cx.listener(Self::on_move_lines_up))
+            .on_action(cx.listener(Self::on_move_lines_down))
+            .on_action(cx.listener(Self::on_duplicate_lines))
+            .on_action(cx.listener(Self::on_delete_lines))
             .on_action(cx.listener(Self::on_cancel))
             .when_some(self.active(), |this, tab| {
                 this.child(self.render_tab_bar(cx))
@@ -785,7 +1018,8 @@ impl Render for EditorPanel {
                             .flex_1()
                             .min_h_0()
                             .bg(editor_background(cx))
-                            .child(
+                            .child(StyledEditor::new(
+                                &tab.editor,
                                 Editor::new(&tab.editor)
                                     .appearance(false)
                                     .bordered(false)
@@ -795,7 +1029,7 @@ impl Render for EditorPanel {
                                     .line_height(relative(EDITOR_LINE_HEIGHT))
                                     .font_features(editor_font_features())
                                     .size_full(),
-                            ),
+                            )),
                     )
             })
     }
@@ -804,6 +1038,8 @@ impl Render for EditorPanel {
 impl EditorPanel {
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.weak_entity();
+        let border = cx.theme().border;
+        let tab_bar_background = cx.theme().tab_bar;
         let selected_index = self
             .active_tab
             .and_then(|id| {
@@ -811,74 +1047,240 @@ impl EditorPanel {
                     .iter()
                     .position(|tab| tab.id == id)
             });
-        TabBar::new("editor-tabs")
-            .children(
-                self.tabs
-                    .iter()
-                    .map(|tab| self.render_tab(tab, &panel, cx)),
-            )
-            .when_some(selected_index, |this, index| this.selected_index(index))
-    }
-
-    fn render_tab(&self, tab: &EditorTab, panel: &WeakEntity<Self>, cx: &App) -> Tab {
-        let id = tab.id;
-        let show_dirty_dot = tab.is_dirty() && self.hovered_tab != Some(id);
-        let slot = div()
-            .flex()
+        let zoomed = self.is_zoomed(cx);
+        let tab_count = self.tabs.len();
+        let navigation = h_flex()
             .flex_none()
-            .items_center()
-            .justify_center()
-            .size(TAB_SLOT_SIZE)
-            .map(|this| {
-                if show_dirty_dot {
-                    this.child(
-                        div()
-                            .size(STATUS_DOT_SIZE)
-                            .rounded_full()
-                            .bg(cx.theme().foreground),
-                    )
-                } else {
-                    let panel = panel.clone();
-                    this.child(
-                        IconButton::new(("close-tab", id.0), IconName::Close)
-                            .small()
-                            .tooltip("Close")
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                panel
-                                    .update(cx, |this, cx| this.close_tab(id, window, cx))
-                                    .log_err();
+            .h_full()
+            .gap(TAB_BAR_SECTION_GAP)
+            .px(TAB_BAR_SECTION_PADDING)
+            .border_b_1()
+            .border_r_1()
+            .border_color(border)
+            .child(
+                IconButton::new("navigate-backward", IconName::ArrowLeft)
+                    .small()
+                    .tooltip("Go Back")
+                    .disabled(self.nav_back.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
+            )
+            .child(
+                IconButton::new("navigate-forward", IconName::ArrowRight)
+                    .small()
+                    .tooltip("Go Forward")
+                    .disabled(self.nav_forward.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))),
+            );
+        let zoom = h_flex()
+            .flex_none()
+            .h_full()
+            .gap(TAB_BAR_SECTION_GAP)
+            .px(TAB_BAR_SECTION_PADDING)
+            .border_b_1()
+            .border_l_1()
+            .border_color(border)
+            .child(
+                IconButton::new(
+                    "toggle-zoom",
+                    if zoomed {
+                        IconName::Minimize
+                    } else {
+                        IconName::Maximize
+                    },
+                )
+                .small()
+                .selected(zoomed)
+                .tooltip(if zoomed { "Zoom Out" } else { "Zoom In" })
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_zoom(window, cx))),
+            );
+        let drop_panel = panel.clone();
+        let end_drop_target = div()
+            .id("editor-tab-bar-drop-target")
+            .min_w_6()
+            .flex_1()
+            .h_full()
+            .drag_over::<DraggedEditorTab>(|style, _, _, cx| style.bg(cx.theme().drop_target))
+            .on_drop(move |dragged: &DraggedEditorTab, window, cx| {
+                drop_panel
+                    .update(cx, |this, cx| {
+                        this.move_tab(dragged.id, tab_count, window, cx)
+                    })
+                    .log_err();
+            });
+        // The bottom border runs under every tab; the active tab's background
+        // covers it so that tab joins the toolbar below.
+        let tabs = div()
+            .relative()
+            .flex_1()
+            .h_full()
+            .overflow_x_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .border_b_1()
+                    .border_color(border),
+            )
+            .child(
+                h_flex()
+                    .id("editor-tabs")
+                    .size_full()
+                    .overflow_x_scroll()
+                    .children(
+                        self.tabs
+                            .iter()
+                            .enumerate()
+                            .map(|(index, tab)| {
+                                self.render_tab(tab, index, selected_index, &panel, cx)
                             }),
                     )
-                }
-            });
+                    .child(end_drop_target),
+            );
+        h_flex()
+            .id("editor-tab-bar")
+            .flex_none()
+            .w_full()
+            .h(TAB_BAR_HEIGHT)
+            .bg(tab_bar_background)
+            .child(navigation)
+            .child(tabs)
+            .child(zoom)
+    }
+
+    /// Borders follow the tab's place relative to the active tab, and a 1px
+    /// padding stands in for each missing border so the content never moves.
+    fn render_tab(
+        &self,
+        tab: &EditorTab,
+        index: usize,
+        active_index: Option<usize>,
+        panel: &WeakEntity<Self>,
+        cx: &App,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let id = tab.id;
+        let is_active = active_index == Some(index);
+        let is_last = index + 1 == self.tabs.len();
+        let (text_color, background) = if is_active {
+            (theme.tab_active_foreground, theme.tab_active)
+        } else {
+            (theme.tab_foreground, theme.tab)
+        };
+        let close_panel = panel.clone();
         let click_panel = panel.clone();
-        let hover_panel = panel.clone();
-        Tab::new()
-            .child(tab.title.clone())
-            .suffix(slot.mr_1())
+        let drop_panel = panel.clone();
+        let dragged = DraggedEditorTab {
+            id,
+            index,
+            title: tab.title.clone(),
+        };
+        let dirty_color = theme.foreground;
+
+        h_flex()
+            .id(("editor-tab", id.0))
+            .group(TAB_GROUP)
+            .flex_none()
+            .h(TAB_BAR_HEIGHT)
+            .bg(background)
+            .border_color(theme.border)
+            .map(|this| match (index, is_last, is_active) {
+                (0, _, true) => this
+                    .pl(px(1.))
+                    .border_r_1()
+                    .pb(px(1.)),
+                (0, _, false) => this
+                    .pl(px(1.))
+                    .pr(px(1.))
+                    .border_b_1(),
+                (_, true, true) => this
+                    .border_l_1()
+                    .border_r_1()
+                    .pb(px(1.)),
+                (_, true, false) => this
+                    .pl(px(1.))
+                    .border_b_1()
+                    .border_r_1(),
+                (_, false, true) => this
+                    .border_l_1()
+                    .border_r_1()
+                    .pb(px(1.)),
+                _ if active_index.is_some_and(|active| index < active) => this
+                    .border_l_1()
+                    .pr(px(1.))
+                    .border_b_1(),
+                _ => this
+                    .border_r_1()
+                    .pl(px(1.))
+                    .border_b_1(),
+            })
+            .cursor_pointer()
             .on_click(move |_, window, cx| {
                 click_panel
                     .update(cx, |this, cx| this.activate_tab(id, window, cx))
                     .log_err();
             })
-            .on_hover(move |hovered, _, cx| {
-                hover_panel
-                    .update(cx, |this, cx| {
-                        let hovered_tab = if *hovered {
-                            Some(id)
-                        } else if this.hovered_tab == Some(id) {
-                            None
-                        } else {
-                            this.hovered_tab
-                        };
-                        if hovered_tab != this.hovered_tab {
-                            this.hovered_tab = hovered_tab;
-                            cx.notify();
-                        }
-                    })
+            .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            .drag_over::<DraggedEditorTab>(move |style, dragged, _, cx| {
+                let style = style
+                    .bg(cx.theme().drop_target)
+                    .border_color(cx.theme().drag_border)
+                    .border_0();
+                match index.cmp(&dragged.index) {
+                    std::cmp::Ordering::Less => style.border_l_2(),
+                    std::cmp::Ordering::Greater => style.border_r_2(),
+                    std::cmp::Ordering::Equal => style,
+                }
+            })
+            .on_drop(move |dragged: &DraggedEditorTab, window, cx| {
+                drop_panel
+                    .update(cx, |this, cx| this.move_tab(dragged.id, index, window, cx))
                     .log_err();
             })
+            .child(
+                h_flex()
+                    .h(TAB_BAR_HEIGHT - px(1.))
+                    .px(TAB_CONTENT_GAP)
+                    .gap(TAB_CONTENT_GAP)
+                    .text_color(text_color)
+                    .child(
+                        h_flex()
+                            .size(TAB_START_SLOT_SIZE)
+                            .flex_none()
+                            .justify_center()
+                            .when(tab.is_dirty(), |this| {
+                                this.child(
+                                    div()
+                                        .size(STATUS_DOT_SIZE)
+                                        .rounded_full()
+                                        .bg(dirty_color),
+                                )
+                            }),
+                    )
+                    .child(tab.title.clone())
+                    .child(
+                        h_flex()
+                            .size(TAB_END_SLOT_SIZE)
+                            .flex_none()
+                            .justify_center()
+                            .child(
+                                IconButton::new(("close-tab", id.0), IconName::Close)
+                                    .small()
+                                    .compact()
+                                    .muted()
+                                    .tooltip("Close Tab")
+                                    .invisible()
+                                    .group_hover(TAB_GROUP, |style| style.visible())
+                                    .on_click(move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        close_panel
+                                            .update(cx, |this, cx| this.close_tab(id, window, cx))
+                                            .log_err();
+                                    }),
+                            ),
+                    ),
+            )
     }
 
     fn render_toolbar(&self, tab: &EditorTab, cx: &mut Context<Self>) -> impl IntoElement {
@@ -980,7 +1382,12 @@ impl EditorPanel {
                                 live_color
                             } else {
                                 idle_color
-                            })),
+                            }))
+                            .suffix(
+                                Icon::new(IconName::ChevronDown)
+                                    .size(ICON_SIZE_XSMALL)
+                                    .text_color(idle_color),
+                            ),
                     )
                     .content(move |_, _, _| match &open_menu {
                         Some(menu) => menu

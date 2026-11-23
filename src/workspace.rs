@@ -47,7 +47,7 @@ impl Workspace {
         let connections_panel =
             cx.new(|cx| ConnectionsPanel::new(registry, project.clone(), window, cx));
         let project_panel = cx.new(|cx| ProjectPanel::new(project.clone(), cx));
-        let editor_panel = cx.new(|cx| EditorPanel::new(project.clone(), window, cx));
+        let editor_panel = cx.new(|cx| EditorPanel::new(project.clone(), &dock_area, window, cx));
         let results_panel = cx.new(|cx| ResultsPanel::new(dock_area.downgrade(), cx));
         let executions = cx.subscribe_in(&editor_panel, window, {
             let results_panel = results_panel.clone();
