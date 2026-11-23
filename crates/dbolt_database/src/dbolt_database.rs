@@ -1,4 +1,5 @@
 mod driver;
+mod profile;
 mod query;
 
 pub use driver::{
@@ -6,4 +7,8 @@ pub use driver::{
     DriverMetadata, DriverRegistry, FormField, FormFieldKind, FormValues, QueryLanguage,
     RelationalConnection, TableInfo, TableKind,
 };
-pub use query::{Column, QueryRequest, QueryResult, Value};
+pub use profile::{
+    ConnectionId, ConnectionProfile, ConnectionScope, ConnectionStore, MemoryConnectionStore,
+    MemorySecretStore, SecretStore, StoreError, StoredConnections,
+};
+pub use query::{Column, ColumnKey, MemoryCursor, QueryCursor, QueryRequest, QueryResult, Value};

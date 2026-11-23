@@ -1,4 +1,8 @@
+pub mod connection_dialog;
+pub mod connection_tree;
 pub mod connections_panel;
+pub mod editor_panel;
 pub mod project_panel;
+pub mod results_panel;
 pub mod status_bar;
 pub mod title_bar;

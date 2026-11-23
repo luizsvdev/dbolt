@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bitflags::bitflags;
 use thiserror::Error;
 
-use crate::query::{QueryRequest, QueryResult};
+use crate::query::{MemoryCursor, QueryCursor, QueryRequest, QueryResult};
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -95,6 +95,13 @@ pub trait Connection: Send + Sync {
     fn ping(&self) -> Result<(), DatabaseError>;
 
     fn execute(&self, request: &QueryRequest) -> Result<QueryResult, DatabaseError>;
+
+    /// Starts a query whose rows are read page by page. The default loads the
+    /// whole result first; drivers that can page on the server override it.
+    fn open_query(&self, text: &str) -> Result<Box<dyn QueryCursor>, DatabaseError> {
+        let result = self.execute(&QueryRequest::new(text))?;
+        Ok(Box::new(MemoryCursor::new(result)))
+    }
 
     fn as_relational(&self) -> Option<&dyn RelationalConnection> {
         None

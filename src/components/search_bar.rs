@@ -8,13 +8,20 @@ use crate::theme::PANEL_HEADER_HEIGHT;
 #[derive(IntoElement)]
 pub struct SearchBar {
     state: Entity<InputState>,
+    suffix: Option<AnyElement>,
 }
 
 impl SearchBar {
     pub fn new(state: &Entity<InputState>) -> Self {
         Self {
             state: state.clone(),
+            suffix: None,
         }
+    }
+
+    pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
+        self.suffix = Some(suffix.into_any_element());
+        self
     }
 }
 
@@ -41,5 +48,6 @@ impl RenderOnce for SearchBar {
                     .px_0()
                     .text_size(px(14.)),
             )
+            .children(self.suffix)
     }
 }

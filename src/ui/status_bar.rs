@@ -32,6 +32,18 @@ impl Render for AppStatusBar {
                     }),
             )
             .right(
+                IconButton::new("toggle-bottom-panel", IconName::PanelBottom)
+                    .small()
+                    .on_click({
+                        let dock_area = self.dock_area.clone();
+                        move |_, window, cx| {
+                            dock_area.update(cx, |area, cx| {
+                                area.toggle_dock(DockPlacement::Bottom, window, cx)
+                            })
+                        }
+                    }),
+            )
+            .right(
                 IconButton::new("toggle-right-panel", IconName::PanelRight)
                     .small()
                     .on_click({
