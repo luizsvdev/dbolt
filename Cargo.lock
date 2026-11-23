@@ -1231,6 +1231,7 @@ name = "dbolt"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "dbolt_database",
  "dbolt_postgres",
  "dbolt_project",

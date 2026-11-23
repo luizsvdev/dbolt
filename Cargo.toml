@@ -8,6 +8,7 @@ members = ["crates/*"]
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = "0.4.45"
 dbolt_database = { version = "0.1.0", path = "crates/dbolt_database" }
 dbolt_postgres = { version = "0.1.0", path = "crates/dbolt_postgres" }
 dbolt_project = { version = "0.1.0", path = "crates/dbolt_project" }
