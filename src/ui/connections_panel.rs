@@ -12,7 +12,7 @@ use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tree::{TreeEntry, TreeEvent, TreeItem, TreeState, tree};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, WindowExt};
@@ -917,9 +917,11 @@ fn render_tree_row(
         Some(NodeKind::Schema { .. }) => (IconName::Network, theme.info),
         Some(NodeKind::Table {
             kind: TableKind::Table,
+            ..
         }) => (IconName::LayoutDashboard, theme.foreground),
         Some(NodeKind::Table {
             kind: TableKind::View,
+            ..
         }) => (IconName::Eye, theme.foreground),
         Some(NodeKind::Loading) => (IconName::LoaderCircle, muted),
         Some(NodeKind::Error(_)) => (IconName::CircleAlert, theme.danger),
@@ -1077,10 +1079,14 @@ fn context_menu(
     kind: &NodeKind,
     menu: PopupMenu,
 ) -> PopupMenu {
-    // The SQL editor does not exist yet, so the entry is shown disabled.
-    let new_query = PopupMenuItem::new("New Query")
-        .icon(AssetIconName::FileCode)
-        .disabled(true);
+    let new_query = |connection: ConnectionId| {
+        entity_menu_item(
+            panel,
+            "New Query",
+            Some(AssetIconName::FileCode),
+            move |_, _, cx| cx.emit(ConnectionsPanelEvent::NewQuery(connection)),
+        )
+    };
 
     match kind {
         NodeKind::Group { path } => {
@@ -1127,7 +1133,7 @@ fn context_menu(
                 .disabled(!is_live),
             )
             .separator()
-            .item(new_query)
+            .item(new_query(id))
             .item(
                 entity_menu_item(
                     panel,
@@ -1167,7 +1173,7 @@ fn context_menu(
         NodeKind::Schema { connection, name } => {
             let connection = *connection;
             let name = name.clone();
-            menu.item(new_query)
+            menu.item(new_query(connection))
                 .item(entity_menu_item(
                     panel,
                     "Refresh",
@@ -1175,12 +1181,17 @@ fn context_menu(
                     move |this, window, cx| this.load_tables(connection, name.clone(), window, cx),
                 ))
         }
-        NodeKind::Table { .. } => menu.item(new_query),
+        NodeKind::Table { connection, .. } => menu.item(new_query(*connection)),
         NodeKind::Loading | NodeKind::Error(_) | NodeKind::Empty | NodeKind::PendingFolder => menu,
     }
 }
 
+pub enum ConnectionsPanelEvent {
+    NewQuery(ConnectionId),
+}
+
 impl EventEmitter<PanelEvent> for ConnectionsPanel {}
+impl EventEmitter<ConnectionsPanelEvent> for ConnectionsPanel {}
 
 impl Focusable for ConnectionsPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {

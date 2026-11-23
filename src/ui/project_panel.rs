@@ -664,7 +664,20 @@ fn render_tree_entry(
             };
             let drop_color = cx.theme().drop_target;
             let panel = panel.clone();
-            this.on_drag(
+            this.when(!is_directory, |this| {
+                let panel = panel.clone();
+                let path = path.clone();
+                this.on_click(move |event, _, cx| {
+                    if event.click_count() == 2
+                        && let Err(error) = panel.update(cx, |_, cx| {
+                            cx.emit(ProjectPanelEvent::OpenFile(path.clone()))
+                        })
+                    {
+                        eprintln!("project panel dropped before opening a file: {error:#}");
+                    }
+                })
+            })
+            .on_drag(
                 DraggedPath {
                     path,
                     name: item.label.clone(),
@@ -929,7 +942,12 @@ fn collect_watch_message(
     }
 }
 
+pub enum ProjectPanelEvent {
+    OpenFile(PathBuf),
+}
+
 impl EventEmitter<PanelEvent> for ProjectPanel {}
+impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
 
 impl Focusable for ProjectPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dbolt_database::{Column, Connection, ConnectionId, QueryCursor, Value};
+use dbolt_database::{Column, Connection, QueryCursor, Value};
 use gpui_kit::{AppContext, Context, EventEmitter, SharedString, Task};
 
 use crate::util::ResultExt;
@@ -20,14 +20,15 @@ pub enum ExecutionState {
 pub enum QueryExecutionEvent {
     Finished,
     RowsLoaded,
-    Failed(SharedString),
+    Failed,
     Cancelled,
 }
+
+type PageResult = Result<(Box<dyn QueryCursor>, Vec<Vec<Value>>), String>;
 
 /// One run of one statement. The editor tab that started it holds it so that
 /// closing the tab can cancel it; the results panel and console observe it.
 pub struct QueryExecution {
-    connection_id: ConnectionId,
     connection_name: SharedString,
     statement: SharedString,
     started_at: Instant,
@@ -49,7 +50,6 @@ impl EventEmitter<QueryExecutionEvent> for QueryExecution {}
 impl QueryExecution {
     pub fn start(
         connection: Arc<dyn Connection>,
-        connection_id: ConnectionId,
         connection_name: SharedString,
         statement: SharedString,
         cx: &mut Context<Self>,
@@ -73,7 +73,6 @@ impl QueryExecution {
             }
         });
         Self {
-            connection_id,
             connection_name,
             statement,
             started_at: Instant::now(),
@@ -89,20 +88,12 @@ impl QueryExecution {
         }
     }
 
-    pub fn connection_id(&self) -> ConnectionId {
-        self.connection_id
-    }
-
     pub fn connection_name(&self) -> &SharedString {
         &self.connection_name
     }
 
     pub fn statement(&self) -> &SharedString {
         &self.statement
-    }
-
-    pub fn started_at(&self) -> Instant {
-        self.started_at
     }
 
     /// Time until the first page arrived or the statement failed.
@@ -172,11 +163,7 @@ impl QueryExecution {
         cx.notify();
     }
 
-    fn finish_page(
-        &mut self,
-        result: Result<(Box<dyn QueryCursor>, Vec<Vec<Value>>), String>,
-        cx: &mut Context<Self>,
-    ) {
+    fn finish_page(&mut self, result: PageResult, cx: &mut Context<Self>) {
         let first_page = self.state == ExecutionState::Running;
         self.loading_more = false;
         self.duration
@@ -202,8 +189,8 @@ impl QueryExecution {
             Err(message) => {
                 let message = SharedString::from(message);
                 self.has_more = false;
-                self.state = ExecutionState::Failed(message.clone());
-                cx.emit(QueryExecutionEvent::Failed(message));
+                self.state = ExecutionState::Failed(message);
+                cx.emit(QueryExecutionEvent::Failed);
             }
         }
         cx.notify();

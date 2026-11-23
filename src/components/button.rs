@@ -22,6 +22,7 @@ const HORIZONTAL_PADDING: Pixels = px(4.);
 #[derive(IntoElement)]
 pub struct Button {
     base: Stateful<Div>,
+    prefix: Option<AnyElement>,
     label: Option<SharedString>,
     label_size: Option<Pixels>,
     style: ButtonStyle,
@@ -33,12 +34,18 @@ impl Button {
     pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             base: div().id(id),
+            prefix: None,
             label: None,
             label_size: None,
             style: ButtonStyle::default(),
             selected: false,
             on_click: None,
         }
+    }
+
+    pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
+        self.prefix = Some(prefix.into_any_element());
+        self
     }
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -142,6 +149,7 @@ impl RenderOnce for Button {
             // Keeps a press from focusing the button or, in the title bar,
             // from starting a window drag.
             .on_any_mouse_down(|_, window, _| window.prevent_default())
+            .children(self.prefix)
             .when_some(self.label, |this, label| this.child(label))
             .when_some(self.on_click, |this, handler| this.on_click(handler))
     }

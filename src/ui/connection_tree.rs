@@ -87,6 +87,7 @@ pub enum NodeKind {
         name: String,
     },
     Table {
+        connection: ConnectionId,
         kind: TableKind,
     },
     Loading,
@@ -395,7 +396,10 @@ fn table_nodes(
             TreeNode::leaf(
                 table_node_id(connection, schema, &table.name),
                 table.name.clone(),
-                NodeKind::Table { kind: table.kind },
+                NodeKind::Table {
+                    connection,
+                    kind: table.kind,
+                },
             )
         })
         .collect()

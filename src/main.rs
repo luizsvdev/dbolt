@@ -2,6 +2,7 @@ mod assets;
 mod components;
 mod project;
 mod query_execution;
+mod sql_statements;
 mod theme;
 mod ui;
 mod util;
@@ -51,6 +52,7 @@ fn main() {
         .with_assets(assets::AppAssets)
         .run(|cx| {
             init(cx);
+            ui::editor_panel::init(cx);
             load_fonts(cx);
             load_theme(cx);
 

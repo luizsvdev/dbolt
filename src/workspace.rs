@@ -14,9 +14,9 @@ use gpui_kit::{
 };
 
 use crate::project::{Project, ProjectEvent};
-use crate::ui::connections_panel::ConnectionsPanel;
+use crate::ui::connections_panel::{ConnectionsPanel, ConnectionsPanelEvent};
 use crate::ui::editor_panel::{EditorPanel, EditorPanelEvent};
-use crate::ui::project_panel::ProjectPanel;
+use crate::ui::project_panel::{ProjectPanel, ProjectPanelEvent};
 use crate::ui::results_panel::ResultsPanel;
 use crate::ui::status_bar::AppStatusBar;
 use crate::ui::title_bar::AppTitleBar;
@@ -54,6 +54,25 @@ impl Workspace {
                     results_panel.update(cx, |panel, cx| {
                         panel.show_execution(execution.clone(), window, cx)
                     });
+                }
+            }
+        });
+
+        let new_queries = cx.subscribe_in(&connections_panel, window, {
+            let editor_panel = editor_panel.clone();
+            move |_, _, event, window, cx| match event {
+                ConnectionsPanelEvent::NewQuery(connection) => {
+                    editor_panel.update(cx, |panel, cx| {
+                        panel.new_query(Some(*connection), window, cx)
+                    });
+                }
+            }
+        });
+        let opened_files = cx.subscribe_in(&project_panel, window, {
+            let editor_panel = editor_panel.clone();
+            move |_, _, event, window, cx| match event {
+                ProjectPanelEvent::OpenFile(path) => {
+                    editor_panel.update(cx, |panel, cx| panel.open_file(path.clone(), window, cx));
                 }
             }
         });
@@ -97,7 +116,7 @@ impl Workspace {
             dock_area,
             title_bar,
             status_bar,
-            _subscriptions: vec![project_errors, executions],
+            _subscriptions: vec![project_errors, executions, new_queries, opened_files],
         }
     }
 }
