@@ -13,10 +13,19 @@ pub enum Value {
     Unsupported(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnKey {
+    Primary,
+    Foreign,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub type_name: String,
+    /// Set when the column comes straight from a table column that is part of
+    /// a primary key (which wins) or a foreign key.
+    pub key: Option<ColumnKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +134,7 @@ mod tests {
             columns: vec![Column {
                 name: "id".to_string(),
                 type_name: "int4".to_string(),
+                key: None,
             }],
             rows: (0..5)
                 .map(|id| vec![Value::Int(id)])

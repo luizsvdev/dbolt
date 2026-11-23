@@ -11,4 +11,4 @@ pub use profile::{
     ConnectionId, ConnectionProfile, ConnectionScope, ConnectionStore, MemoryConnectionStore,
     MemorySecretStore, SecretStore, StoreError, StoredConnections,
 };
-pub use query::{Column, MemoryCursor, QueryCursor, QueryRequest, QueryResult, Value};
+pub use query::{Column, ColumnKey, MemoryCursor, QueryCursor, QueryRequest, QueryResult, Value};

@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dbolt_database::{
-    Column, Connection, ConnectionForm, DatabaseCategory, DatabaseError, Driver,
+    Column, ColumnKey, Connection, ConnectionForm, DatabaseCategory, DatabaseError, Driver,
     DriverCapabilities, DriverMetadata, FormField, FormFieldKind, FormValues, MemoryCursor,
     QueryCursor, QueryLanguage, QueryRequest, QueryResult, RelationalConnection, TableInfo,
     TableKind, Value,
@@ -357,7 +357,8 @@ impl Connection for PostgresConnection {
             return Ok(Box::new(MemoryCursor::from_rows_affected(rows_affected)));
         }
 
-        let columns = columns_of(&statement);
+        let mut columns = columns_of(&statement);
+        mark_key_columns(&mut session.client, &statement, &mut columns);
         let types: Vec<Type> = statement
             .columns()
             .iter()
@@ -408,8 +409,68 @@ fn columns_of(statement: &postgres::Statement) -> Vec<Column> {
                 .type_()
                 .name()
                 .to_string(),
+            key: None,
         })
         .collect()
+}
+
+const KEY_COLUMNS_QUERY: &str = "\
+    SELECT c.conrelid, k.attnum, c.contype = 'p' \
+    FROM pg_constraint c, unnest(c.conkey) AS k(attnum) \
+    WHERE c.contype IN ('p', 'f') AND c.conrelid = ANY($1)";
+
+/// Marks the result columns that come straight from a primary or foreign key
+/// column. The marks only decorate the grid, so when the lookup fails the
+/// result is shown without them rather than failing the query.
+fn mark_key_columns(client: &mut Client, statement: &postgres::Statement, columns: &mut [Column]) {
+    let sources: Vec<Option<(u32, i16)>> = statement
+        .columns()
+        .iter()
+        .map(|column| {
+            column
+                .table_oid()
+                .zip(column.column_id())
+        })
+        .collect();
+    let mut tables: Vec<u32> = sources
+        .iter()
+        .flatten()
+        .map(|(table, _)| *table)
+        .collect();
+    tables.sort_unstable();
+    tables.dedup();
+    if tables.is_empty() {
+        return;
+    }
+    let rows = match client.query(KEY_COLUMNS_QUERY, &[&tables]) {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("could not look up key columns: {}", describe_error(&error));
+            return;
+        }
+    };
+    for row in rows {
+        let (Ok(table), Ok(attribute), Ok(is_primary)) = (
+            row.try_get::<_, u32>(0),
+            row.try_get::<_, i16>(1),
+            row.try_get::<_, bool>(2),
+        ) else {
+            continue;
+        };
+        let key = if is_primary {
+            ColumnKey::Primary
+        } else {
+            ColumnKey::Foreign
+        };
+        for (column, source) in columns
+            .iter_mut()
+            .zip(&sources)
+        {
+            if *source == Some((table, attribute)) && column.key != Some(ColumnKey::Primary) {
+                column.key = Some(key);
+            }
+        }
+    }
 }
 
 /// Reads rows from a server-side cursor with `FETCH`.

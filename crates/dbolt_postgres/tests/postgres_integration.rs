@@ -3,7 +3,7 @@
 //! `cargo test -p dbolt_postgres -- --ignored`.
 
 use dbolt_database::{
-    Connection, DatabaseError, Driver, FormValues, QueryRequest, TableKind, Value,
+    ColumnKey, Connection, DatabaseError, Driver, FormValues, QueryRequest, TableKind, Value,
 };
 use dbolt_postgres::PostgresDriver;
 
@@ -335,4 +335,37 @@ fn open_query_reports_sql_errors_as_query_errors() {
     let result = connect().open_query("SELECT * FROM table_that_does_not_exist");
 
     assert!(matches!(result, Err(DatabaseError::Query(_))));
+}
+
+#[test]
+#[ignore = "needs a running PostgreSQL server"]
+fn open_query_marks_primary_and_foreign_key_columns() {
+    let connection = connect();
+    for statement in [
+        "CREATE TEMP TABLE dbolt_owner (id int PRIMARY KEY)",
+        "CREATE TEMP TABLE dbolt_pet (id int PRIMARY KEY, owner_id int REFERENCES dbolt_owner (id), name text)",
+    ] {
+        connection
+            .open_query(statement)
+            .expect("create table");
+    }
+
+    let cursor = connection
+        .open_query("SELECT p.id, p.owner_id, p.name, 1 AS literal FROM dbolt_pet p")
+        .expect("open query");
+
+    let keys: Vec<Option<ColumnKey>> = cursor
+        .columns()
+        .iter()
+        .map(|column| column.key)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            Some(ColumnKey::Primary),
+            Some(ColumnKey::Foreign),
+            None,
+            None
+        ]
+    );
 }
