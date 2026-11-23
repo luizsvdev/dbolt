@@ -1,13 +1,19 @@
 use std::collections::VecDeque;
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::Duration;
 
 use dbolt_database::Value;
 use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::base::dock::DockPlacement;
+use gpui_kit::base::input::Rope;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent};
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::highlighter::SyntaxHighlighter;
+use gpui_kit::component::input::{
+    Editor, EditorState, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter,
+    InputHighlighterFactory,
+};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column as TableColumn, DataTable, TableDelegate, TableState};
@@ -356,7 +362,11 @@ impl TableDelegate for ResultTableDelegate {
     ) -> impl IntoElement {
         let border_color = cx.theme().table_row_border;
         let Some(data_col) = col_ix.checked_sub(1) else {
+            // The table keeps room for a sort icon on the right of each header
+            // cell, so filling the cell would stop short of the column edge.
             return cell_frame()
+                .flex_none()
+                .w(ROW_NUMBER_WIDTH)
                 .border_r_1()
                 .border_color(border_color)
                 .into_any_element();
@@ -535,6 +545,211 @@ const CONSOLE_LIST_WIDTH: Pixels = px(240.);
 const CONSOLE_ROW_HEIGHT: Pixels = px(24.);
 const CONSOLE_INDENT: Pixels = px(16.);
 
+const OUTPUT_LANGUAGE: &str = "dbolt-output";
+const ERROR_PREFIX: &str = "ERROR: ";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OutputSegment {
+    Time,
+    Prompt,
+    Sql,
+    Plain,
+    Error,
+}
+
+/// Splits the output into styled segments covering all of it. A line starts
+/// with `[time]`; a statement line follows it with a `prompt>` token, and the
+/// statement's other lines are indented under it.
+fn output_segments(text: &str) -> Vec<(Range<usize>, OutputSegment)> {
+    let mut segments = Vec::new();
+    let mut in_statement = false;
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let line_end = line_start + line.len();
+        let content = line.trim_end_matches(['\n', '\r']);
+        let time_end = content
+            .starts_with('[')
+            .then(|| content.find("] "))
+            .flatten();
+        match time_end {
+            Some(time_end) => {
+                let time_end = line_start + time_end + 1;
+                segments.push((line_start..time_end, OutputSegment::Time));
+                let rest = &text[time_end..line_end];
+                let body_start = time_end + rest.len() - rest.trim_start().len();
+                let prompt_len = rest
+                    .split_whitespace()
+                    .next()
+                    .filter(|token| token.ends_with('>'))
+                    .map(str::len);
+                segments.push((time_end..body_start, OutputSegment::Plain));
+                in_statement = prompt_len.is_some();
+                match prompt_len {
+                    Some(prompt_len) => {
+                        let prompt_end = body_start + prompt_len;
+                        segments.push((body_start..prompt_end, OutputSegment::Prompt));
+                        segments.push((prompt_end..line_end, OutputSegment::Sql));
+                    }
+                    None if rest
+                        .trim_start()
+                        .starts_with(ERROR_PREFIX) =>
+                    {
+                        segments.push((body_start..line_end, OutputSegment::Error));
+                    }
+                    None => segments.push((body_start..line_end, OutputSegment::Plain)),
+                }
+            }
+            None if in_statement => segments.push((line_start..line_end, OutputSegment::Sql)),
+            None => segments.push((line_start..line_end, OutputSegment::Plain)),
+        }
+        line_start = line_end;
+    }
+    segments.retain(|(range, _)| !range.is_empty());
+    segments
+}
+
+/// Highlights the output log: statements as SQL, times and prompts with the
+/// syntax theme's comment and number colours, and errors in red.
+struct OutputHighlighter {
+    sql: SyntaxHighlighter,
+    segments: Vec<(Range<usize>, OutputSegment)>,
+    error_color: Hsla,
+}
+
+impl OutputHighlighter {
+    fn segment_style(
+        &self,
+        segment: OutputSegment,
+        resolver: &dyn HighlightStyleResolver,
+    ) -> HighlightStyle {
+        let color = match segment {
+            OutputSegment::Time => resolver
+                .style("comment")
+                .and_then(|style| style.color),
+            OutputSegment::Prompt => resolver
+                .style("number")
+                .and_then(|style| style.color),
+            OutputSegment::Error => Some(self.error_color),
+            OutputSegment::Sql | OutputSegment::Plain => None,
+        };
+        HighlightStyle {
+            color,
+            ..HighlightStyle::default()
+        }
+    }
+}
+
+impl InputHighlighter for OutputHighlighter {
+    fn language(&self) -> SharedString {
+        OUTPUT_LANGUAGE.into()
+    }
+
+    fn update(
+        &mut self,
+        _edit: Option<InputEdit>,
+        text: &Rope,
+        _folding: bool,
+        _window: &mut Window,
+        _cx: &mut Context<EditorState>,
+    ) {
+        let text = text.to_string();
+        self.segments = output_segments(&text);
+        // The parser sees only the statements, at their own offsets: other
+        // text becomes spaces, and each log line starts with `;` so every
+        // statement parses on its own.
+        let mut sql_only = text.into_bytes();
+        for (range, segment) in &self.segments {
+            if *segment == OutputSegment::Sql {
+                continue;
+            }
+            for (offset, byte) in sql_only
+                .get_mut(range.clone())
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if *byte != b'\n' {
+                    *byte = if offset == 0 && *segment == OutputSegment::Time {
+                        b';'
+                    } else {
+                        b' '
+                    };
+                }
+            }
+        }
+        // Every replaced byte was a whole segment, so only whole characters
+        // were overwritten and the bytes stay valid UTF-8.
+        let sql_only = String::from_utf8(sql_only).unwrap_or_default();
+        self.sql
+            .update(None, &Rope::from_str(&sql_only), None);
+    }
+
+    fn styles(
+        &self,
+        range: &Range<usize>,
+        resolver: &dyn HighlightStyleResolver,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let mut styles = Vec::new();
+        let mut covered = range.start;
+        for (segment_range, segment) in &self.segments {
+            let start = segment_range
+                .start
+                .max(range.start);
+            let end = segment_range
+                .end
+                .min(range.end);
+            if start >= end {
+                continue;
+            }
+            if *segment == OutputSegment::Sql {
+                for (sql_range, style) in self
+                    .sql
+                    .styles(&(start..end), resolver)
+                {
+                    let sql_start = sql_range.start.max(covered);
+                    if sql_start < sql_range.end {
+                        if covered < sql_start {
+                            styles.push((covered..sql_start, HighlightStyle::default()));
+                        }
+                        styles.push((sql_start..sql_range.end, style));
+                        covered = sql_range.end;
+                    }
+                }
+                if covered < end {
+                    styles.push((covered..end, HighlightStyle::default()));
+                }
+            } else {
+                if covered < start {
+                    styles.push((covered..start, HighlightStyle::default()));
+                }
+                styles.push((start..end, self.segment_style(*segment, resolver)));
+            }
+            covered = end;
+        }
+        if covered < range.end {
+            styles.push((covered..range.end, HighlightStyle::default()));
+        }
+        styles
+    }
+
+    fn fold_ranges(&self, _text: &Rope) -> Vec<FoldRange> {
+        Vec::new()
+    }
+}
+
+fn output_highlighter_factory(cx: &App) -> InputHighlighterFactory {
+    let error_color = cx.theme().danger;
+    Rc::new(move |language| {
+        (language == OUTPUT_LANGUAGE).then(|| {
+            Box::new(OutputHighlighter {
+                sql: SyntaxHighlighter::new("sql"),
+                segments: Vec::new(),
+                error_color,
+            }) as Box<dyn InputHighlighter>
+        })
+    })
+}
+
 fn timestamp() -> String {
     chrono::Local::now()
         .format("[%Y-%m-%d %H:%M:%S:%3f]")
@@ -563,7 +778,7 @@ fn outcome_entry(execution: &QueryExecution) -> String {
         .map(format_duration)
         .unwrap_or_default();
     let outcome = match execution.state() {
-        ExecutionState::Failed(error) => error.to_string(),
+        ExecutionState::Failed(error) => format!("{ERROR_PREFIX}{error}"),
         ExecutionState::Cancelled => "Cancelled".to_string(),
         ExecutionState::Running => "Running…".to_string(),
         ExecutionState::Ready if execution.columns().is_empty() => format!(
@@ -820,10 +1035,15 @@ impl ResultsPanel {
                 console._run_subscription = run_subscription;
             }
             None => {
+                let highlighter_factory = output_highlighter_factory(cx);
                 let output_editor = cx.new(|cx| {
-                    EditorState::new(window, cx)
+                    let mut editor = EditorState::new(window, cx)
+                        .language(OUTPUT_LANGUAGE)
                         .line_number(false)
                         .folding(false)
+                        .indent_guides(false);
+                    editor.set_highlighter_factory(highlighter_factory, cx);
+                    editor
                 });
                 self.consoles.push(Console {
                     id: console_id,
@@ -1320,7 +1540,8 @@ mod tests {
     use dbolt_database::Value;
 
     use super::{
-        CellRange, ValueKind, csv_field, format_duration, single_line, statement_entry, value_text,
+        CellRange, OutputSegment, ValueKind, csv_field, format_duration, output_segments,
+        single_line, statement_entry, value_text,
     };
 
     #[test]
@@ -1392,5 +1613,34 @@ mod tests {
         assert!(range.contains(5, 3));
         assert!(!range.contains(6, 3));
         assert!(!range.contains(4, 0));
+    }
+
+    #[test]
+    fn output_lines_split_into_time_prompt_sql_and_errors() {
+        let text = "[t1] db> select 1\n         from t\n[t2] 1 row\n[t3] ERROR: boom";
+        let kinds: Vec<(&str, OutputSegment)> = output_segments(text)
+            .into_iter()
+            .filter(|(_, segment)| *segment != OutputSegment::Plain)
+            .map(|(range, segment)| {
+                (
+                    text.get(range)
+                        .unwrap_or_default()
+                        .trim_end(),
+                    segment,
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("[t1]", OutputSegment::Time),
+                ("db>", OutputSegment::Prompt),
+                (" select 1", OutputSegment::Sql),
+                ("         from t", OutputSegment::Sql),
+                ("[t2]", OutputSegment::Time),
+                ("[t3]", OutputSegment::Time),
+                ("ERROR: boom", OutputSegment::Error),
+            ]
+        );
     }
 }
