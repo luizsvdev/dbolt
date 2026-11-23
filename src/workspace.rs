@@ -15,8 +15,9 @@ use gpui_kit::{
 
 use crate::project::{Project, ProjectEvent};
 use crate::ui::connections_panel::ConnectionsPanel;
-use crate::ui::placeholder_panel::PlaceholderPanel;
+use crate::ui::editor_panel::{EditorPanel, EditorPanelEvent};
 use crate::ui::project_panel::ProjectPanel;
+use crate::ui::results_panel::ResultsPanel;
 use crate::ui::status_bar::AppStatusBar;
 use crate::ui::title_bar::AppTitleBar;
 
@@ -44,8 +45,18 @@ impl Workspace {
         let connections_panel =
             cx.new(|cx| ConnectionsPanel::new(registry, project.clone(), window, cx));
         let project_panel = cx.new(|cx| ProjectPanel::new(project.clone(), cx));
-        let editor_placeholder = cx.new(|cx| PlaceholderPanel::new("EditorPanel", "Editor", cx));
-        let results_placeholder = cx.new(|cx| PlaceholderPanel::new("ResultsPanel", "Results", cx));
+        let editor_panel = cx.new(|cx| EditorPanel::new(project.clone(), window, cx));
+        let results_panel = cx.new(|cx| ResultsPanel::new(window, cx));
+        let executions = cx.subscribe_in(&editor_panel, window, {
+            let results_panel = results_panel.clone();
+            move |_, _, event, window, cx| match event {
+                EditorPanelEvent::ExecutionStarted(execution) => {
+                    results_panel.update(cx, |panel, cx| {
+                        panel.show_execution(execution.clone(), window, cx)
+                    });
+                }
+            }
+        });
 
         dock_area.update(cx, |area, cx| {
             const DOCK_SIZE: Pixels = px(240.);
@@ -65,14 +76,14 @@ impl Workspace {
                 cx,
             );
             area.add_panel_view(
-                panel_handle(editor_placeholder),
+                panel_handle(editor_panel),
                 DockPlacement::Center,
                 None,
                 window,
                 cx,
             );
             area.add_panel_view(
-                panel_handle(results_placeholder),
+                panel_handle(results_panel),
                 DockPlacement::Bottom,
                 Some(BOTTOM_DOCK_SIZE),
                 window,
@@ -86,7 +97,7 @@ impl Workspace {
             dock_area,
             title_bar,
             status_bar,
-            _subscriptions: vec![project_errors],
+            _subscriptions: vec![project_errors, executions],
         }
     }
 }

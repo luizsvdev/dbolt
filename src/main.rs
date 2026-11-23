@@ -1,6 +1,7 @@
 mod assets;
 mod components;
 mod project;
+mod query_execution;
 mod theme;
 mod ui;
 mod util;
