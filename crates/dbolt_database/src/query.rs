@@ -86,6 +86,17 @@ impl MemoryCursor {
     }
 }
 
+impl MemoryCursor {
+    /// For statements that report a row count without returning rows.
+    pub fn from_rows_affected(rows_affected: u64) -> Self {
+        Self {
+            columns: Vec::new(),
+            rows: Vec::new().into_iter(),
+            rows_affected: Some(rows_affected),
+        }
+    }
+}
+
 impl QueryCursor for MemoryCursor {
     fn columns(&self) -> &[Column] {
         &self.columns
