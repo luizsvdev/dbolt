@@ -12,7 +12,6 @@ pub enum InlineNameEvent {
 /// empty name cancels.
 pub struct InlineNameEditor {
     input: Entity<InputState>,
-    text_size: Pixels,
     finished: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -20,13 +19,7 @@ pub struct InlineNameEditor {
 impl EventEmitter<InlineNameEvent> for InlineNameEditor {}
 
 impl InlineNameEditor {
-    /// `text_size` is the tree's own, so the field matches the other rows.
-    pub fn new(
-        initial_name: &str,
-        text_size: Pixels,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(initial_name: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).default_value(initial_name));
         // Deferred because the editor usually opens from a menu, which hands
         // focus back to its trigger as it closes; focusing now would lose to
@@ -49,7 +42,6 @@ impl InlineNameEditor {
             ];
         Self {
             input,
-            text_size,
             finished: false,
             _subscriptions: subscriptions,
         }
@@ -81,28 +73,43 @@ impl InlineNameEditor {
 }
 
 impl Render for InlineNameEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Like Zed's filename editor, the field takes the text style of the
+        // row it sits in (a view renders inside its parent's text style), so
+        // swapping the label for the field changes neither the text nor the
+        // row height.
+        let text_style = window.text_style();
+        let line_height = window.line_height();
+
         div()
             .flex_1()
             .min_w_0()
+            .h(line_height)
+            // The input's frame ends up taller than the line it is given, so
+            // it is centred here; placed from the top, its text sat 2-3px
+            // below the label's.
+            .flex()
+            .items_center()
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.finish(InlineNameEvent::Cancel, cx);
                 }
             }))
-            // No border of its own: like Zed's filename editor, the row being
-            // edited shows the focus border instead.
-            // The input's default size is a 32px control with smaller text;
-            // auto height and the tree's text size keep the row as tall as
-            // its neighbours.
+            // No border of its own: the row being edited shows the focus
+            // border instead.
             .child(
                 Input::new(&self.input)
                     .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
                     .px_0()
                     .py_0()
-                    .h_auto()
-                    .text_size(self.text_size),
+                    .h(line_height)
+                    .line_height(text_style.line_height)
+                    .text_size(text_style.font_size)
+                    .font_family(text_style.font_family.clone())
+                    .font_weight(text_style.font_weight),
             )
     }
 }

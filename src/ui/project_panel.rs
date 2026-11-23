@@ -409,7 +409,7 @@ impl ProjectPanel {
                 self.load_directory(directory.to_path_buf(), cx);
             }
         }
-        let editor = cx.new(|cx| InlineNameEditor::new(&initial_name, PANEL_FONT_SIZE, window, cx));
+        let editor = cx.new(|cx| InlineNameEditor::new(&initial_name, window, cx));
         let subscription = cx.subscribe_in(&editor, window, |this, _, event, window, cx| {
             let Some(edit) = this.edit.take() else {
                 return;
@@ -605,6 +605,7 @@ fn render_tree_entry(
     index: usize,
     entry: &TreeEntry,
     edit: Option<(&EditTarget, &Entity<InlineNameEditor>)>,
+    focused_selection: bool,
     panel: &WeakEntity<ProjectPanel>,
     cx: &App,
 ) -> ListItem {
@@ -645,9 +646,11 @@ fn render_tree_entry(
         (Some(IconName::File), cx.theme().foreground)
     };
     let guide_color = cx.theme().border;
-    // Every row has a border so its content never shifts; it is only
-    // visible on the row being edited, as in Zed.
-    let border_color = if editor.is_some() {
+    // As in Zed's project panel, every row keeps a border so its content
+    // never moves, and only its colour changes: the focus colour on the
+    // active row (selected or being edited) while the panel holds focus.
+    // A name field only has focus inside its panel, so editing implies it.
+    let border_color = if editor.is_some() || focused_selection {
         cx.theme().ring
     } else {
         cx.theme().transparent
@@ -968,18 +971,22 @@ impl Panel for ProjectPanel {
 }
 
 impl Render for ProjectPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel_focused = self
+            .focus_handle
+            .contains_focused(window, cx);
         div()
             .size_full()
+            .track_focus(&self.focus_handle)
             .font_family(UI_FONT_FAMILY)
             .text_size(PANEL_FONT_SIZE)
             .font_weight(PANEL_FONT_WEIGHT)
-            .child(self.render_content(cx))
+            .child(self.render_content(panel_focused, cx))
     }
 }
 
 impl ProjectPanel {
-    fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_content(&self, panel_focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let Some(root) = &self.root else {
             return self
                 .render_empty_state(cx)
@@ -1020,11 +1027,18 @@ impl ProjectPanel {
                         .child(
                             tree(
                                 &self.tree_state,
-                                move |index, entry, _selected, _window, cx| {
+                                move |index, entry, is_selected, _window, cx| {
                                     let edit = edit
                                         .as_ref()
                                         .map(|(target, editor)| (target, editor));
-                                    render_tree_entry(index, entry, edit, &tree_panel, cx)
+                                    render_tree_entry(
+                                        index,
+                                        entry,
+                                        edit,
+                                        is_selected && panel_focused,
+                                        &tree_panel,
+                                        cx,
+                                    )
                                 },
                             )
                             .context_menu(

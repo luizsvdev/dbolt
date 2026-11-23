@@ -591,8 +591,7 @@ impl ConnectionsPanel {
                 .to_string(),
             FolderEditTarget::New { .. } => String::new(),
         };
-        let text_size = cx.theme().font_size;
-        let editor = cx.new(|cx| InlineNameEditor::new(&initial_name, text_size, window, cx));
+        let editor = cx.new(|cx| InlineNameEditor::new(&initial_name, window, cx));
         let subscription = cx.subscribe_in(&editor, window, |this, _, event, window, cx| {
             let Some(edit) = this.folder_edit.take() else {
                 return;
@@ -910,6 +909,7 @@ fn render_tree_row(
     entry: &TreeEntry,
     kind: Option<&NodeKind>,
     folder_edit: Option<(&FolderEditTarget, &Entity<InlineNameEditor>)>,
+    focused_selection: bool,
     panel: &WeakEntity<ConnectionsPanel>,
     cx: &App,
 ) -> ListItem {
@@ -970,9 +970,11 @@ fn render_tree_row(
         edits_this_row.then_some(editor)
     });
     let is_editing = editor.is_some();
-    // Every row has a border so its content never shifts; it is only
-    // visible on the row being edited, as in Zed.
-    let border_color = if is_editing {
+    // As in Zed's project panel, every row keeps a border so its content
+    // never moves, and only its colour changes: the focus colour on the
+    // active row (selected or being edited) while the panel holds focus.
+    // A name field only has focus inside its panel, so editing implies it.
+    let border_color = if is_editing || focused_selection {
         theme.ring
     } else {
         theme.transparent
@@ -1215,8 +1217,11 @@ impl Panel for ConnectionsPanel {
 }
 
 impl Render for ConnectionsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = cx.weak_entity();
+        let panel_focused = self
+            .focus_handle
+            .contains_focused(window, cx);
         let new_item = IconButton::new("new-item", AssetIconName::Plus)
             .small()
             .tooltip("New Connection or Folder")
@@ -1241,7 +1246,7 @@ impl Render for ConnectionsPanel {
                 let row_panel = panel.clone();
                 tree(
                     &self.tree_state,
-                    move |index, entry, _selected, _window, cx| {
+                    move |index, entry, is_selected, _window, cx| {
                         render_tree_row(
                             index,
                             entry,
@@ -1249,6 +1254,7 @@ impl Render for ConnectionsPanel {
                             folder_edit
                                 .as_ref()
                                 .map(|(target, editor)| (target, editor)),
+                            is_selected && panel_focused,
                             &row_panel,
                             cx,
                         )
@@ -1266,6 +1272,7 @@ impl Render for ConnectionsPanel {
         v_flex()
             .flex_1()
             .size_full()
+            .track_focus(&self.focus_handle)
             .child(SearchBar::new(&self.search_input).suffix(new_item))
             .child(
                 div()
