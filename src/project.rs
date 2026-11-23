@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dbolt_database::{
-    ConnectionId, ConnectionProfile, ConnectionScope, ConnectionStore, MemoryConnectionStore,
-    SecretStore, StoreError, StoredConnections,
+    Connection, ConnectionId, ConnectionProfile, ConnectionScope, ConnectionStore,
+    MemoryConnectionStore, SecretStore, StoreError, StoredConnections,
 };
 use dbolt_project::{FileConnectionStore, KeyringSecretStore, RecentProjects};
 use gpui_kit::{
@@ -16,6 +16,7 @@ use gpui_kit::{
 pub enum ProjectEvent {
     Opened,
     ConnectionsChanged,
+    LiveConnectionsChanged,
     RecentProjectsChanged,
     Error(SharedString),
 }
@@ -60,6 +61,7 @@ pub struct Project {
     global_store: Arc<dyn ConnectionStore>,
     secret_store: Arc<dyn SecretStore>,
     connections: Vec<ConnectionProfile>,
+    live_connections: HashMap<ConnectionId, Arc<dyn Connection>>,
     folders: Vec<(ConnectionScope, String)>,
     /// False while the stores are being read. Changing profiles before the
     /// read finishes would save a list missing the stored ones.
@@ -93,6 +95,7 @@ impl Project {
             global_store,
             secret_store: Arc::new(KeyringSecretStore::new()),
             connections: Vec::new(),
+            live_connections: HashMap::new(),
             folders: Vec::new(),
             connections_loaded: false,
             unavailable_scopes: HashSet::new(),
@@ -135,6 +138,34 @@ impl Project {
 
     pub fn connections(&self) -> &[ConnectionProfile] {
         &self.connections
+    }
+
+    pub fn live_connection(&self, id: ConnectionId) -> Option<Arc<dyn Connection>> {
+        self.live_connections
+            .get(&id)
+            .cloned()
+    }
+
+    pub fn set_live_connection(
+        &mut self,
+        id: ConnectionId,
+        connection: Option<Arc<dyn Connection>>,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = match connection {
+            Some(connection) => {
+                self.live_connections
+                    .insert(id, connection);
+                true
+            }
+            None => self
+                .live_connections
+                .remove(&id)
+                .is_some(),
+        };
+        if changed {
+            cx.emit(ProjectEvent::LiveConnectionsChanged);
+        }
     }
 
     pub fn folders(&self) -> impl Iterator<Item = &str> {

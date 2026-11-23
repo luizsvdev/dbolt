@@ -76,7 +76,6 @@ pub struct ConnectionsPanel {
     registry: Arc<DriverRegistry>,
     project: Entity<Project>,
     connections: Vec<ConnectionEntry>,
-    live_connections: HashMap<ConnectionId, Arc<dyn Connection>>,
     expanded: HashSet<SharedString>,
     filter: String,
     node_kinds: Rc<HashMap<SharedString, NodeKind>>,
@@ -126,7 +125,6 @@ impl ConnectionsPanel {
             registry,
             project,
             connections: Vec::new(),
-            live_connections: HashMap::new(),
             expanded: HashSet::new(),
             filter: String::new(),
             node_kinds: Rc::new(HashMap::new()),
@@ -166,8 +164,10 @@ impl ConnectionsPanel {
             self.connections.push(entry);
         }
         for connection in previous.into_keys() {
-            self.live_connections
-                .remove(&connection);
+            self.project
+                .update(cx, |project, cx| {
+                    project.set_live_connection(connection, None, cx)
+                });
             self.tasks
                 .retain(|key, _| key.connection() != connection);
         }
@@ -340,8 +340,10 @@ impl ConnectionsPanel {
         match result {
             Ok(live_connection) => {
                 entry.status = ConnectionStatus::Connected;
-                self.live_connections
-                    .insert(connection, live_connection);
+                self.project
+                    .update(cx, |project, cx| {
+                        project.set_live_connection(connection, Some(live_connection), cx)
+                    });
                 if self
                     .expanded
                     .contains(&connection_node_id(connection))
@@ -363,8 +365,10 @@ impl ConnectionsPanel {
     fn disconnect(&mut self, connection: ConnectionId, cx: &mut Context<Self>) {
         self.tasks
             .retain(|key, _| key.connection() != connection);
-        self.live_connections
-            .remove(&connection);
+        self.project
+            .update(cx, |project, cx| {
+                project.set_live_connection(connection, None, cx)
+            });
         if let Some(entry) = self.entry_mut(connection) {
             entry.status = ConnectionStatus::Disconnected;
             entry.content = Load::NotLoaded;
@@ -379,9 +383,9 @@ impl ConnectionsPanel {
         cx: &mut Context<Self>,
     ) {
         let Some(live_connection) = self
-            .live_connections
-            .get(&connection)
-            .cloned()
+            .project
+            .read(cx)
+            .live_connection(connection)
         else {
             return;
         };
@@ -463,9 +467,9 @@ impl ConnectionsPanel {
         cx: &mut Context<Self>,
     ) {
         let Some(live_connection) = self
-            .live_connections
-            .get(&connection)
-            .cloned()
+            .project
+            .read(cx)
+            .live_connection(connection)
         else {
             return;
         };
