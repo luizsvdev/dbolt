@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dbolt_database::DriverRegistry;
 use dbolt_postgres::PostgresDriver;
-use gpui_kit::base::dock::{DockPlacement, PanelId};
+use gpui_kit::base::dock::DockPlacement;
 use gpui_kit::base::v_flex;
 use gpui_kit::component::dock::panel_handle;
 use gpui_kit::component::notification::Notification;
@@ -15,7 +15,6 @@ use gpui_kit::{
 
 use crate::project::{Project, ProjectEvent};
 use crate::ui::connections_panel::{ConnectionsPanel, ConnectionsPanelEvent};
-use crate::ui::console::ConsolePanel;
 use crate::ui::editor_panel::{EditorPanel, EditorPanelEvent};
 use crate::ui::project_panel::{ProjectPanel, ProjectPanelEvent};
 use crate::ui::results_panel::ResultsPanel;
@@ -37,7 +36,9 @@ impl Workspace {
                 window.push_notification(Notification::error(message.clone()), cx);
             }
         });
-        let (dock_area, _dock_skin) = DockSkin::dock_area("main-dock", Some(1), window, cx);
+        let (dock_area, dock_skin) = DockSkin::dock_area("main-dock", Some(1), window, cx);
+        // The status bar reopens the bottom dock, so a closed one leaves no strip.
+        dock_skin.set_collapsed_tab_bar_visible(false, cx);
 
         let mut registry = DriverRegistry::new();
         registry.register(Arc::new(PostgresDriver::new()));
@@ -47,21 +48,17 @@ impl Workspace {
             cx.new(|cx| ConnectionsPanel::new(registry, project.clone(), window, cx));
         let project_panel = cx.new(|cx| ProjectPanel::new(project.clone(), cx));
         let editor_panel = cx.new(|cx| EditorPanel::new(project.clone(), window, cx));
-        let results_panel = cx.new(|cx| ResultsPanel::new(window, cx));
-        let console_panel = cx.new(ConsolePanel::new);
+        let results_panel = cx.new(|cx| ResultsPanel::new(dock_area.downgrade(), cx));
         let executions = cx.subscribe_in(&editor_panel, window, {
             let results_panel = results_panel.clone();
-            let console_panel = console_panel.clone();
             let dock_area = dock_area.clone();
             move |_, _, event, window, cx| match event {
-                EditorPanelEvent::ExecutionStarted(execution) => {
-                    results_panel.update(cx, |panel, cx| {
-                        panel.show_execution(execution.clone(), window, cx)
-                    });
-                    console_panel
-                        .update(cx, |panel, cx| panel.add_execution(execution.clone(), cx));
+                EditorPanelEvent::RunStarted(console_run) => {
+                    results_panel.update(cx, |panel, cx| panel.show_run(console_run, window, cx));
                     dock_area.update(cx, |area, cx| {
-                        area.select_panel(PanelId::from(results_panel.entity_id()), window, cx)
+                        if !area.is_dock_open(DockPlacement::Bottom) {
+                            area.toggle_dock(DockPlacement::Bottom, window, cx);
+                        }
                     });
                 }
             }
@@ -71,9 +68,7 @@ impl Workspace {
             let editor_panel = editor_panel.clone();
             move |_, _, event, window, cx| match event {
                 ConnectionsPanelEvent::NewQuery(connection) => {
-                    editor_panel.update(cx, |panel, cx| {
-                        panel.new_query(Some(*connection), window, cx)
-                    });
+                    editor_panel.update(cx, |panel, cx| panel.new_query(*connection, window, cx));
                 }
             }
         });
@@ -110,18 +105,10 @@ impl Workspace {
                 window,
                 cx,
             );
-            // Added last so the results tab is the one shown at start.
-            area.add_panel_view(
-                panel_handle(console_panel),
-                DockPlacement::Bottom,
-                Some(BOTTOM_DOCK_SIZE),
-                window,
-                cx,
-            );
             area.add_panel_view(
                 panel_handle(results_panel),
                 DockPlacement::Bottom,
-                None,
+                Some(BOTTOM_DOCK_SIZE),
                 window,
                 cx,
             );

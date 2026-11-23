@@ -101,20 +101,122 @@ pub fn statement_at(statements: &[Statement], offset: usize) -> Option<&Statemen
         .or_else(|| statements.first())
 }
 
-/// The SQL to run: the selection when there is one, otherwise the statement
-/// under the cursor. `None` when there is nothing to run.
-pub fn statement_to_run(text: &str, selection: Range<usize>) -> Option<&str> {
-    let statement = if selection.is_empty() {
+/// The statements to run: every statement in the selection when there is one,
+/// otherwise the statement under the cursor.
+pub fn statements_to_run(text: &str, selection: Range<usize>) -> Vec<&str> {
+    if selection.is_empty() {
         let statements = split_statements(text);
-        let statement = statement_at(&statements, selection.start)?;
-        text.get(statement.range.clone())?
-    } else {
-        text.get(selection)?
-            .trim()
-            .trim_end_matches(';')
-            .trim_end()
-    };
-    (!statement.is_empty()).then_some(statement)
+        return statement_at(&statements, selection.start)
+            .and_then(|statement| text.get(statement.range.clone()))
+            .into_iter()
+            .collect();
+    }
+    text.get(selection)
+        .map(all_statements)
+        .unwrap_or_default()
+}
+
+pub fn all_statements(text: &str) -> Vec<&str> {
+    split_statements(text)
+        .into_iter()
+        .filter_map(|statement| text.get(statement.range))
+        .collect()
+}
+
+/// The relation named by the first top-level `FROM`, as written, so a result
+/// can be titled after the table it came from.
+pub fn from_target(statement: &str) -> Option<&str> {
+    let bytes = statement.as_bytes();
+    let mut depth = 0usize;
+    let mut after_from = false;
+    let mut index = 0;
+
+    while let Some(&byte) = bytes.get(index) {
+        let next = bytes.get(index + 1).copied();
+        match byte {
+            byte if byte.is_ascii_whitespace() => index += 1,
+            b'-' if next == Some(b'-') => {
+                index = bytes[index..]
+                    .iter()
+                    .position(|&byte| byte == b'\n')
+                    .map_or(bytes.len(), |offset| index + offset);
+            }
+            b'/' if next == Some(b'*') => index = skip_block_comment(bytes, index),
+            b'\'' => {
+                let backslash_escapes = is_escape_string_prefix(bytes, index);
+                index = skip_quoted(bytes, index, b'\'', backslash_escapes);
+                after_from = false;
+            }
+            b'$' => {
+                index = skip_dollar_quoted(statement, index).unwrap_or(index + 1);
+                after_from = false;
+            }
+            b'(' => {
+                depth += 1;
+                index += 1;
+                after_from = false;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            b'"' => {
+                if after_from && depth == 0 {
+                    return Some(qualified_name_at(statement, index));
+                }
+                index = skip_quoted(bytes, index, b'"', false);
+            }
+            byte if is_identifier_byte(byte) => {
+                let start = index;
+                while bytes
+                    .get(index)
+                    .is_some_and(|&byte| is_identifier_byte(byte))
+                {
+                    index += 1;
+                }
+                if after_from && depth == 0 {
+                    return Some(qualified_name_at(statement, start));
+                }
+                after_from = depth == 0
+                    && statement
+                        .get(start..index)
+                        .is_some_and(|word| word.eq_ignore_ascii_case("from"));
+            }
+            _ => {
+                index += 1;
+                after_from = false;
+            }
+        }
+    }
+    None
+}
+
+/// Reads `name`, `"Quoted Name"` and dotted chains of them starting at `start`.
+fn qualified_name_at(statement: &str, start: usize) -> &str {
+    let bytes = statement.as_bytes();
+    let mut index = start;
+    loop {
+        match bytes.get(index) {
+            Some(b'"') => index = skip_quoted(bytes, index, b'"', false),
+            Some(&byte) if is_identifier_byte(byte) => {
+                while bytes
+                    .get(index)
+                    .is_some_and(|&byte| is_identifier_byte(byte))
+                {
+                    index += 1;
+                }
+            }
+            _ => break,
+        }
+        if bytes.get(index) != Some(&b'.') {
+            break;
+        }
+        index += 1;
+    }
+    statement
+        .get(start..index)
+        .unwrap_or_default()
+        .trim_end_matches('.')
 }
 
 fn is_identifier_byte(byte: u8) -> bool {
@@ -371,13 +473,41 @@ mod tests {
     #[test]
     fn runs_the_selection_or_the_statement_under_the_cursor() {
         let text = "select 1;\nselect 2;";
-        assert_eq!(statement_to_run(text, 12..12), Some("select 2"));
-        assert_eq!(statement_to_run(text, 0..9), Some("select 1"));
+        assert_eq!(statements_to_run(text, 12..12), vec!["select 2"]);
+        assert_eq!(statements_to_run(text, 0..9), vec!["select 1"]);
         assert_eq!(
-            statement_to_run(text, 0..text.len()),
-            Some("select 1;\nselect 2")
+            statements_to_run(text, 0..text.len()),
+            vec!["select 1", "select 2"]
         );
-        assert_eq!(statement_to_run("  ", 1..1), None);
-        assert_eq!(statement_to_run(text, 9..10), None);
+        assert!(statements_to_run("  ", 1..1).is_empty());
+        assert!(statements_to_run(text, 9..10).is_empty());
+    }
+
+    #[test]
+    fn selection_runs_every_statement_in_it() {
+        let text = "select 1; select 2;\nselect 3;";
+        assert_eq!(statements_to_run(text, 0..19), vec!["select 1", "select 2"]);
+        assert_eq!(statements_to_run(text, 21..21), vec!["select 3"]);
+        assert_eq!(all_statements(text).len(), 3);
+    }
+
+    #[test]
+    fn from_target_reads_the_first_top_level_relation() {
+        assert_eq!(
+            from_target("select po.id\nfrom admin.platform_owner po"),
+            Some("admin.platform_owner")
+        );
+        assert_eq!(from_target("SELECT * FROM users"), Some("users"));
+        assert_eq!(
+            from_target("select * from \"My Schema\".\"Orders\" o"),
+            Some("\"My Schema\".\"Orders\"")
+        );
+        assert_eq!(
+            from_target("select (select 1 from inner_table) from outer_table"),
+            Some("outer_table")
+        );
+        assert_eq!(from_target("select 'from x' as label"), None);
+        assert_eq!(from_target("-- from comment\nselect 1"), None);
+        assert_eq!(from_target("select 1"), None);
     }
 }

@@ -4,6 +4,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use dbolt_database::ConnectionId;
+use gpui_kit::assets::IconName as AssetIconName;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
@@ -18,9 +19,12 @@ use gpui_kit::*;
 use crate::components::button::{Button, ButtonStyle};
 use crate::components::icon_button::IconButton;
 use crate::project::{Project, ProjectEvent};
-use crate::query_execution::{ExecutionState, QueryExecution};
-use crate::sql_statements::statement_to_run;
-use crate::theme::{LABEL_SIZE_SMALL, PANEL_HEADER_HEIGHT};
+use crate::query_execution::QueryRun;
+use crate::sql_statements::{all_statements, statements_to_run};
+use crate::theme::{
+    EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE, EDITOR_FONT_WEIGHT, EDITOR_LINE_HEIGHT, LABEL_SIZE_SMALL,
+    PANEL_HEADER_HEIGHT, editor_background, editor_font_features,
+};
 use crate::util::ResultExt;
 
 actions!(
@@ -32,8 +36,10 @@ actions!(
         CloseTab,
         /// Saves the active query tab.
         SaveFile,
-        /// Runs the selection, or the statement under the cursor.
+        /// Runs the selected statements, or the statement under the cursor.
         RunStatement,
+        /// Runs every statement in the active query tab.
+        RunAll,
         /// Cancels the statement running in the active tab.
         CancelExecution,
     ]
@@ -46,12 +52,18 @@ const TAB_SLOT_SIZE: Pixels = px(18.);
 // `KeyBinding::new` cannot parse the `secondary` modifier, which needs the
 // platform to resolve.
 #[cfg(target_os = "macos")]
-const KEYS: [&str; 4] = ["cmd-n", "cmd-w", "cmd-s", "cmd-enter"];
+const KEYS: [&str; 5] = ["cmd-n", "cmd-w", "cmd-s", "cmd-enter", "cmd-shift-enter"];
 #[cfg(not(target_os = "macos"))]
-const KEYS: [&str; 4] = ["ctrl-n", "ctrl-w", "ctrl-s", "ctrl-enter"];
+const KEYS: [&str; 5] = [
+    "ctrl-n",
+    "ctrl-w",
+    "ctrl-s",
+    "ctrl-enter",
+    "ctrl-shift-enter",
+];
 
 pub fn init(cx: &mut App) {
-    let [new_query, close_tab, save_file, run_statement] = KEYS;
+    let [new_query, close_tab, save_file, run_statement, run_all] = KEYS;
     cx.bind_keys([
         KeyBinding::new(new_query, NewQuery, Some(KEY_CONTEXT)),
         KeyBinding::new(close_tab, CloseTab, Some(KEY_CONTEXT)),
@@ -59,15 +71,30 @@ pub fn init(cx: &mut App) {
         // The editor's own `Enter` binding for this key lets the event go on,
         // so this binding still runs while the editor has focus.
         KeyBinding::new(run_statement, RunStatement, Some(KEY_CONTEXT)),
+        KeyBinding::new(run_all, RunAll, Some(KEY_CONTEXT)),
     ]);
 }
 
+pub struct ConsoleRun {
+    pub console: TabId,
+    pub console_name: SharedString,
+    pub connection_name: SharedString,
+    pub database: Option<SharedString>,
+    pub run: Entity<QueryRun>,
+}
+
 pub enum EditorPanelEvent {
-    ExecutionStarted(Entity<QueryExecution>),
+    RunStarted(ConsoleRun),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct TabId(usize);
+pub struct TabId(usize);
+
+impl TabId {
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
 
 struct EditorTab {
     id: TabId,
@@ -79,9 +106,9 @@ struct EditorTab {
     /// made while the file was being written keep the tab dirty.
     edit_version: u64,
     saved_version: u64,
-    execution: Option<Entity<QueryExecution>>,
+    run: Option<Entity<QueryRun>>,
     save_task: Option<Task<()>>,
-    _execution_subscription: Option<Subscription>,
+    _run_subscription: Option<Subscription>,
     _editor_subscription: Subscription,
 }
 
@@ -91,9 +118,9 @@ impl EditorTab {
     }
 
     fn is_running(&self, cx: &App) -> bool {
-        self.execution
+        self.run
             .as_ref()
-            .is_some_and(|execution| *execution.read(cx).state() == ExecutionState::Running)
+            .is_some_and(|run| run.read(cx).is_running())
     }
 }
 
@@ -230,9 +257,9 @@ impl EditorPanel {
             connection,
             edit_version: 0,
             saved_version: 0,
-            execution: None,
+            run: None,
             save_task: None,
-            _execution_subscription: None,
+            _run_subscription: None,
             _editor_subscription: editor_subscription,
         });
         self.activate_tab(id, window, cx);
@@ -301,8 +328,8 @@ impl EditorPanel {
             return;
         };
         let tab = self.tabs.remove(index);
-        if let Some(execution) = &tab.execution {
-            execution.update(cx, |execution, cx| execution.cancel(cx));
+        if let Some(run) = &tab.run {
+            run.update(cx, |run, cx| run.cancel(cx));
         }
         if self.hovered_tab == Some(id) {
             self.hovered_tab = None;
@@ -425,7 +452,7 @@ impl EditorPanel {
         tab.save_task = Some(task);
     }
 
-    fn run_statement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn run(&mut self, whole_file: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active() else {
             return;
         };
@@ -456,6 +483,11 @@ impl EditorPanel {
             return;
         };
         let connection_name = SharedString::from(profile.name.clone());
+        let database = profile
+            .values
+            .get("database")
+            .filter(|database| !database.is_empty())
+            .map(|database| SharedString::from(database.clone()));
         let Some(connection) = project.live_connection(connection_id) else {
             show_error(
                 format!(
@@ -466,32 +498,45 @@ impl EditorPanel {
             );
             return;
         };
+        let console_name = tab.title.clone();
         let editor = tab.editor.read(cx);
         // Splitting is a single linear scan, and runs only when the user asks.
         let text = editor.value();
-        let Some(statement) = statement_to_run(&text, editor.selected_range()) else {
+        let statements: Vec<SharedString> = if whole_file {
+            all_statements(&text)
+        } else {
+            statements_to_run(&text, editor.selected_range())
+        }
+        .into_iter()
+        .map(|statement| SharedString::from(statement.to_string()))
+        .collect();
+        if statements.is_empty() {
             show_error("There is no statement to run.", window, cx);
             return;
-        };
-        let statement = SharedString::from(statement.to_string());
-
-        let execution =
-            cx.new(|cx| QueryExecution::start(connection, connection_name, statement, cx));
-        let subscription = cx.observe(&execution, |_, _, cx| cx.notify());
-        if let Some(tab) = self.tab_mut(id) {
-            tab.execution = Some(execution.clone());
-            tab._execution_subscription = Some(subscription);
         }
-        cx.emit(EditorPanelEvent::ExecutionStarted(execution));
+
+        let run = cx.new(|cx| QueryRun::new(connection, statements, cx));
+        let subscription = cx.observe(&run, |_, _, cx| cx.notify());
+        if let Some(tab) = self.tab_mut(id) {
+            tab.run = Some(run.clone());
+            tab._run_subscription = Some(subscription);
+        }
+        cx.emit(EditorPanelEvent::RunStarted(ConsoleRun {
+            console: id,
+            console_name,
+            connection_name,
+            database,
+            run,
+        }));
         cx.notify();
     }
 
     fn cancel_execution(&mut self, cx: &mut Context<Self>) {
-        if let Some(execution) = self
+        if let Some(run) = self
             .active()
-            .and_then(|tab| tab.execution.clone())
+            .and_then(|tab| tab.run.clone())
         {
-            execution.update(cx, |execution, cx| execution.cancel(cx));
+            run.update(cx, |run, cx| run.cancel(cx));
         }
     }
 
@@ -512,7 +557,11 @@ impl EditorPanel {
     }
 
     fn on_run(&mut self, _: &RunStatement, window: &mut Window, cx: &mut Context<Self>) {
-        self.run_statement(window, cx);
+        self.run(false, window, cx);
+    }
+
+    fn on_run_all(&mut self, _: &RunAll, window: &mut Window, cx: &mut Context<Self>) {
+        self.run(true, window, cx);
     }
 
     fn on_cancel(&mut self, _: &CancelExecution, _: &mut Window, cx: &mut Context<Self>) {
@@ -563,23 +612,28 @@ impl Render for EditorPanel {
             .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_run))
+            .on_action(cx.listener(Self::on_run_all))
             .on_action(cx.listener(Self::on_cancel))
-            .child(self.render_tab_bar(cx))
-            .map(|this| match self.active() {
-                Some(tab) => this
+            .when_some(self.active(), |this, tab| {
+                this.child(self.render_tab_bar(cx))
                     .child(self.render_toolbar(tab, cx))
                     .child(
                         div()
                             .flex_1()
                             .min_h_0()
+                            .bg(editor_background(cx))
                             .child(
                                 Editor::new(&tab.editor)
                                     .appearance(false)
                                     .bordered(false)
+                                    .font_family(EDITOR_FONT_FAMILY)
+                                    .text_size(EDITOR_FONT_SIZE)
+                                    .font_weight(EDITOR_FONT_WEIGHT)
+                                    .line_height(relative(EDITOR_LINE_HEIGHT))
+                                    .font_features(editor_font_features())
                                     .size_full(),
                             ),
-                    ),
-                None => this.child(self.render_empty_state(cx)),
+                    )
             })
     }
 }
@@ -601,26 +655,6 @@ impl EditorPanel {
                     .map(|tab| self.render_tab(tab, &panel, cx)),
             )
             .when_some(selected_index, |this, index| this.selected_index(index))
-            .suffix(
-                h_flex()
-                    .h_full()
-                    .items_center()
-                    .px_2()
-                    .border_l_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.tab_bar)
-                    .child(
-                        IconButton::new("new-query", IconName::Plus)
-                            .small()
-                            .tooltip("New Query")
-                            .on_click(move |_, window, cx| {
-                                panel
-                                    .update(cx, |this, cx| this.new_query(None, window, cx))
-                                    .log_err();
-                            }),
-                    ),
-            )
     }
 
     fn render_tab(&self, tab: &EditorTab, panel: &WeakEntity<Self>, cx: &App) -> Tab {
@@ -726,28 +760,41 @@ impl EditorPanel {
         let live_color = theme.success;
         let idle_color = theme.muted_foreground;
 
-        let run_button = if tab.is_running(cx) {
-            IconButton::new("cancel-statement", IconName::Square)
-                .small()
-                .tooltip("Cancel")
-                .on_click(cx.listener(|this, _, _, cx| this.cancel_execution(cx)))
+        let run_buttons = if tab.is_running(cx) {
+            h_flex().child(
+                IconButton::new("cancel-statement", IconName::Square)
+                    .small()
+                    .tooltip("Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| this.cancel_execution(cx))),
+            )
         } else {
-            IconButton::new("run-statement", IconName::Play)
-                .small()
-                .tooltip("Run Statement (Ctrl+Enter)")
-                .on_click(cx.listener(|this, _, window, cx| this.run_statement(window, cx)))
+            h_flex()
+                .gap_1()
+                .child(
+                    IconButton::new("run-statement", IconName::Play)
+                        .small()
+                        .tooltip("Run Statement (Ctrl+Enter)")
+                        .on_click(cx.listener(|this, _, window, cx| this.run(false, window, cx))),
+                )
+                .child(
+                    IconButton::new("run-all", AssetIconName::ListVideo)
+                        .small()
+                        .tooltip("Run All (Ctrl+Shift+Enter)")
+                        .on_click(cx.listener(|this, _, window, cx| this.run(true, window, cx))),
+                )
         };
 
         h_flex()
             .flex_shrink_0()
             .w_full()
             .h(PANEL_HEADER_HEIGHT)
+            .bg(editor_background(cx))
             .items_center()
             .justify_between()
             .px_2()
             .border_b_1()
             .border_color(theme.border)
-            .child(run_button)
+            .child(run_buttons)
             .child(
                 Button::new("connection-selector")
                     .label(connection_label)
@@ -788,22 +835,6 @@ impl EditorPanel {
                                 )
                             })
                     }),
-            )
-    }
-
-    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .flex_1()
-            .gap_2()
-            .justify_center()
-            .items_center()
-            .text_color(cx.theme().muted_foreground)
-            .child("No open queries")
-            .child(
-                Button::new("empty-new-query")
-                    .label("New Query")
-                    .style(ButtonStyle::Filled)
-                    .on_click(cx.listener(|this, _, window, cx| this.new_query(None, window, cx))),
             )
     }
 }

@@ -53,6 +53,7 @@ fn main() {
         .run(|cx| {
             init(cx);
             ui::editor_panel::init(cx);
+            ui::results_panel::init(cx);
             load_fonts(cx);
             load_theme(cx);
 

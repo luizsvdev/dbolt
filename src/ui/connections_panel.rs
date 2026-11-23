@@ -1046,6 +1046,18 @@ fn render_tree_row(
         )
 }
 
+fn root_menu(panel: &WeakEntity<ConnectionsPanel>, menu: PopupMenu) -> PopupMenu {
+    let menu = menu
+        .item(entity_menu_item(
+            panel,
+            "New Query",
+            Some(AssetIconName::FileCode),
+            |_, _, cx| cx.emit(ConnectionsPanelEvent::NewQuery(None)),
+        ))
+        .separator();
+    creation_menu(panel, None, menu)
+}
+
 fn creation_menu(
     panel: &WeakEntity<ConnectionsPanel>,
     folder: Option<String>,
@@ -1084,7 +1096,7 @@ fn context_menu(
             panel,
             "New Query",
             Some(AssetIconName::FileCode),
-            move |_, _, cx| cx.emit(ConnectionsPanelEvent::NewQuery(connection)),
+            move |_, _, cx| cx.emit(ConnectionsPanelEvent::NewQuery(Some(connection))),
         )
     };
 
@@ -1187,7 +1199,7 @@ fn context_menu(
 }
 
 pub enum ConnectionsPanelEvent {
-    NewQuery(ConnectionId),
+    NewQuery(Option<ConnectionId>),
 }
 
 impl EventEmitter<PanelEvent> for ConnectionsPanel {}
@@ -1219,10 +1231,10 @@ impl Render for ConnectionsPanel {
             .contains_focused(window, cx);
         let new_item = IconButton::new("new-item", AssetIconName::Plus)
             .small()
-            .tooltip("New Connection or Folder")
+            .tooltip("New Query, Connection or Folder")
             .dropdown_menu({
                 let panel = panel.clone();
-                move |menu, _, _| creation_menu(&panel, None, menu)
+                move |menu, _, _| root_menu(&panel, menu)
             });
 
         let body =
@@ -1289,7 +1301,7 @@ impl Render for ConnectionsPanel {
                     })
                     // Rows open their own menu and stop the event, so this one
                     // only opens on the empty space around them.
-                    .context_menu(move |menu, _, _| creation_menu(&panel, None, menu)),
+                    .context_menu(move |menu, _, _| root_menu(&panel, menu)),
             )
     }
 }

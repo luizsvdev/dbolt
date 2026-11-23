@@ -1,8 +1,9 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dbolt_database::{Column, Connection, QueryCursor, Value};
-use gpui_kit::{AppContext, Context, EventEmitter, SharedString, Task};
+use gpui_kit::{AppContext, Context, Entity, EventEmitter, SharedString, Subscription, Task};
 
 use crate::util::ResultExt;
 
@@ -26,10 +27,8 @@ pub enum QueryExecutionEvent {
 
 type PageResult = Result<(Box<dyn QueryCursor>, Vec<Vec<Value>>), String>;
 
-/// One run of one statement. The editor tab that started it holds it so that
-/// closing the tab can cancel it; the results panel and console observe it.
+/// One run of one statement, started by a [`QueryRun`].
 pub struct QueryExecution {
-    connection_name: SharedString,
     statement: SharedString,
     started_at: Instant,
     duration: Option<Duration>,
@@ -50,7 +49,6 @@ impl EventEmitter<QueryExecutionEvent> for QueryExecution {}
 impl QueryExecution {
     pub fn start(
         connection: Arc<dyn Connection>,
-        connection_name: SharedString,
         statement: SharedString,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -73,7 +71,6 @@ impl QueryExecution {
             }
         });
         Self {
-            connection_name,
             statement,
             started_at: Instant::now(),
             duration: None,
@@ -86,10 +83,6 @@ impl QueryExecution {
             loading_more: false,
             task,
         }
-    }
-
-    pub fn connection_name(&self) -> &SharedString {
-        &self.connection_name
     }
 
     pub fn statement(&self) -> &SharedString {
@@ -193,6 +186,115 @@ impl QueryExecution {
                 cx.emit(QueryExecutionEvent::Failed);
             }
         }
+        cx.notify();
+    }
+}
+
+/// Runs statements one after another on one connection, stopping at the
+/// first one that fails. The editor tab that started it holds it so that
+/// closing the tab can cancel it; the results panel observes it.
+///
+/// Observers read the state instead of receiving events, because the first
+/// statement starts before anyone can subscribe to the new run.
+pub struct QueryRun {
+    connection: Arc<dyn Connection>,
+    pending: VecDeque<SharedString>,
+    executions: Vec<Entity<QueryExecution>>,
+    /// How many of `executions`, from the start, have ended: returned their
+    /// first page, failed or been cancelled.
+    ended_count: usize,
+    started_at: Instant,
+    duration: Option<Duration>,
+    _current_subscription: Option<Subscription>,
+}
+
+impl QueryRun {
+    pub fn new(
+        connection: Arc<dyn Connection>,
+        statements: Vec<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut run = Self {
+            connection,
+            pending: statements.into(),
+            executions: Vec::new(),
+            ended_count: 0,
+            started_at: Instant::now(),
+            duration: None,
+            _current_subscription: None,
+        };
+        run.start_next(cx);
+        run
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.duration.is_none()
+    }
+
+    /// Wall time of the whole run, set once it ends.
+    pub fn duration(&self) -> Option<Duration> {
+        self.duration
+    }
+
+    pub fn executions(&self) -> &[Entity<QueryExecution>] {
+        &self.executions
+    }
+
+    pub fn ended_count(&self) -> usize {
+        self.ended_count
+    }
+
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.pending.clear();
+        match self.current() {
+            Some(execution) => execution.update(cx, |execution, cx| execution.cancel(cx)),
+            None => self.finish(cx),
+        }
+    }
+
+    fn current(&self) -> Option<Entity<QueryExecution>> {
+        self.executions
+            .get(self.ended_count)
+            .cloned()
+    }
+
+    fn start_next(&mut self, cx: &mut Context<Self>) {
+        let Some(statement) = self.pending.pop_front() else {
+            self.finish(cx);
+            return;
+        };
+        let connection = self.connection.clone();
+        let execution = cx.new(|cx| QueryExecution::start(connection, statement, cx));
+        self._current_subscription =
+            Some(cx.subscribe(&execution, |this, execution, event, cx| {
+                let succeeded = match event {
+                    QueryExecutionEvent::Finished => true,
+                    QueryExecutionEvent::Failed | QueryExecutionEvent::Cancelled => false,
+                    QueryExecutionEvent::RowsLoaded => return,
+                };
+                if this.current() != Some(execution) {
+                    return;
+                }
+                this.ended_count += 1;
+                this._current_subscription = None;
+                if succeeded {
+                    this.start_next(cx);
+                } else {
+                    this.pending.clear();
+                    this.finish(cx);
+                }
+                cx.notify();
+            }));
+        self.executions
+            .push(execution);
+        cx.notify();
+    }
+
+    fn finish(&mut self, cx: &mut Context<Self>) {
+        if self.duration.is_some() {
+            return;
+        }
+        self.duration = Some(self.started_at.elapsed());
         cx.notify();
     }
 }

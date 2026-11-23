@@ -1,23 +1,32 @@
+use std::collections::VecDeque;
+use std::ops::Range;
 use std::time::Duration;
 
 use dbolt_database::Value;
+use gpui_kit::assets::IconName as AssetIconName;
+use gpui_kit::base::dock::DockPlacement;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::dock::{BasePanel, Panel, PanelEvent};
+use gpui_kit::component::dock::{BasePanel, DockArea, Panel, PanelEvent};
+use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{Column as TableColumn, DataTable, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 use crate::components::button::Button;
 use crate::components::icon_button::IconButton;
-use crate::query_execution::{ExecutionState, QueryExecution, QueryExecutionEvent};
-use crate::theme::{LABEL_SIZE_SMALL, PANEL_HEADER_HEIGHT};
+use crate::components::menu::entity_menu_item;
+use crate::query_execution::{ExecutionState, QueryExecution, QueryRun};
+use crate::sql_statements::from_target;
+use crate::theme::{ICON_SIZE_SMALL, LABEL_SIZE_SMALL, PANEL_HEADER_HEIGHT, editor_background};
+use crate::ui::editor_panel::{ConsoleRun, TabId};
+use crate::util::ResultExt;
 
 /// Longest text drawn in a cell. Laying out a whole document for a narrow
 /// cell would cost time on every frame for nothing the user can see.
 const MAX_CELL_CHARS: usize = 256;
-const MAX_TAB_LABEL_CHARS: usize = 32;
 /// Rows sampled to size the columns when the first page arrives.
 const COLUMN_WIDTH_SAMPLE_ROWS: usize = 100;
 const CHAR_WIDTH: f32 = 7.;
@@ -117,10 +126,44 @@ pub(crate) fn plural(count: u64, singular: &str, plural: &str) -> String {
     }
 }
 
+const ROW_NUMBER_WIDTH: Pixels = px(48.);
+
+/// A rectangle of cells in data coordinates (row, column), from where the
+/// drag started to where it is now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct CellRange {
+    anchor: (usize, usize),
+    head: (usize, usize),
+}
+
+impl CellRange {
+    fn cell(row_ix: usize, col_ix: usize) -> Self {
+        Self {
+            anchor: (row_ix, col_ix),
+            head: (row_ix, col_ix),
+        }
+    }
+
+    fn rows(&self) -> Range<usize> {
+        self.anchor.0.min(self.head.0)..self.anchor.0.max(self.head.0) + 1
+    }
+
+    fn cols(&self) -> Range<usize> {
+        self.anchor.1.min(self.head.1)..self.anchor.1.max(self.head.1) + 1
+    }
+
+    fn contains(&self, row_ix: usize, col_ix: usize) -> bool {
+        self.rows().contains(&row_ix) && self.cols().contains(&col_ix)
+    }
+}
+
+/// Table column 0 is the row number; data column `n` is table column `n + 1`.
 struct ResultTableDelegate {
     execution: Entity<QueryExecution>,
     columns: Vec<TableColumn>,
     kinds: Vec<ValueKind>,
+    selection: Option<CellRange>,
+    dragging: bool,
 }
 
 impl ResultTableDelegate {
@@ -129,6 +172,8 @@ impl ResultTableDelegate {
             execution,
             columns: Vec::new(),
             kinds: Vec::new(),
+            selection: None,
+            dragging: false,
         }
     }
 
@@ -139,7 +184,14 @@ impl ResultTableDelegate {
             .iter()
             .map(|column| ValueKind::of_type(&column.type_name))
             .collect();
-        self.columns = execution
+        let row_number = TableColumn::new("row-number", "")
+            .width(ROW_NUMBER_WIDTH)
+            .fixed_left()
+            .resizable(false)
+            .movable(false)
+            .selectable(false)
+            .p_0();
+        let data_columns = execution
             .columns()
             .iter()
             .enumerate()
@@ -159,19 +211,23 @@ impl ResultTableDelegate {
                 let widest = widest_value.max(column.name.chars().count());
                 let width = (widest as f32 * CHAR_WIDTH + CELL_PADDING)
                     .clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
-                let table_column = TableColumn::new(
+                TableColumn::new(
                     SharedString::from(column_ix.to_string()),
                     column.name.clone(),
                 )
                 .width(px(width))
-                .movable(false);
-                if self.kinds.get(column_ix) == Some(&ValueKind::Number) {
-                    table_column.text_right()
-                } else {
-                    table_column
-                }
-            })
+                .movable(false)
+                .p_0()
+            });
+        self.columns = std::iter::once(row_number)
+            .chain(data_columns)
             .collect();
+    }
+
+    fn data_column_count(&self) -> usize {
+        self.columns
+            .len()
+            .saturating_sub(1)
     }
 
     fn value(&self, row_ix: usize, col_ix: usize, cx: &App) -> Option<Value> {
@@ -182,6 +238,95 @@ impl ResultTableDelegate {
             .and_then(|row| row.get(col_ix))
             .cloned()
     }
+
+    fn copy_text(&self, row_ix: usize, col_ix: usize, cx: &App) -> String {
+        match self.value(row_ix, col_ix, cx) {
+            Some(Value::Text(text)) => text,
+            Some(value) => value_text(&value).to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// The selected cells as CSV, with the selected columns' names first.
+    fn selection_csv(&self, cx: &App) -> Option<String> {
+        let selection = self.selection?;
+        let execution = self.execution.read(cx);
+        let columns = execution.columns();
+        let rows = execution.rows();
+        let col_range = selection.cols();
+        let row_range = selection.rows().start
+            ..selection
+                .rows()
+                .end
+                .min(rows.len());
+        let mut csv = columns
+            .get(col_range.clone())?
+            .iter()
+            .map(|column| csv_field(&column.name))
+            .collect::<Vec<_>>()
+            .join(",");
+        for row in rows
+            .get(row_range)
+            .unwrap_or_default()
+        {
+            csv.push('\n');
+            let line = row
+                .get(col_range.clone())
+                .unwrap_or_default()
+                .iter()
+                .map(|value| match value {
+                    Value::Null => String::new(),
+                    Value::Text(text) => csv_field(text.as_str()),
+                    value => csv_field(&value_text(value)),
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            csv.push_str(&line);
+        }
+        Some(csv)
+    }
+
+    /// Starts a selection at `cell`, or stretches the current one to it with
+    /// Shift held.
+    fn press(&mut self, range: CellRange, extend: bool) {
+        self.selection = match (self.selection, extend) {
+            (Some(selection), true) => Some(CellRange {
+                anchor: selection.anchor,
+                head: range.head,
+            }),
+            _ => Some(range),
+        };
+        self.dragging = true;
+    }
+
+    fn drag_to(&mut self, head: (usize, usize), button_held: bool) -> bool {
+        if !button_held {
+            self.dragging = false;
+            return false;
+        }
+        match &mut self.selection {
+            Some(selection) if self.dragging && selection.head != head => {
+                selection.head = head;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn csv_field(text: &str) -> String {
+    let needs_quotes =
+        text.contains([',', '"', '\n', '\r']) || text.starts_with(' ') || text.ends_with(' ');
+    if needs_quotes {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_string()
+    }
+}
+
+fn focus_table(table: &TableState<ResultTableDelegate>, window: &mut Window, cx: &mut App) {
+    let focus_handle = table.focus_handle(cx);
+    window.focus(&focus_handle, cx);
 }
 
 impl TableDelegate for ResultTableDelegate {
@@ -203,6 +348,48 @@ impl TableDelegate for ResultTableDelegate {
             .unwrap_or_default()
     }
 
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let border_color = cx.theme().table_row_border;
+        let Some(data_col) = col_ix.checked_sub(1) else {
+            return cell_frame()
+                .border_r_1()
+                .border_color(border_color)
+                .into_any_element();
+        };
+        let name = self
+            .columns
+            .get(col_ix)
+            .map(|column| column.name.clone())
+            .unwrap_or_default();
+        let last_row = self
+            .rows_count(cx)
+            .saturating_sub(1);
+        // The resize handle draws this column's right edge in the header.
+        cell_frame()
+            .id(("result-header", col_ix))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |table, event: &MouseDownEvent, window, cx| {
+                    table.delegate_mut().press(
+                        CellRange {
+                            anchor: (0, data_col),
+                            head: (last_row, data_col),
+                        },
+                        event.modifiers.shift,
+                    );
+                    focus_table(table, window, cx);
+                    cx.notify();
+                }),
+            )
+            .child(div().truncate().child(name))
+            .into_any_element()
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -210,18 +397,56 @@ impl TableDelegate for ResultTableDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let theme = cx.theme();
+        let border_color = theme.table_row_border;
+        let Some(data_col) = col_ix.checked_sub(1) else {
+            let last_col = self
+                .data_column_count()
+                .saturating_sub(1);
+            return cell_frame()
+                .id(("row-number", row_ix))
+                .justify_end()
+                .bg(theme.tokens.table_head)
+                .border_r_1()
+                .border_color(border_color)
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |table, event: &MouseDownEvent, window, cx| {
+                        table.delegate_mut().press(
+                            CellRange {
+                                anchor: (row_ix, 0),
+                                head: (row_ix, last_col),
+                            },
+                            event.modifiers.shift,
+                        );
+                        focus_table(table, window, cx);
+                        cx.notify();
+                    }),
+                )
+                .child((row_ix + 1).to_string())
+                .into_any_element();
+        };
+        let selected = self
+            .selection
+            .is_some_and(|selection| selection.contains(row_ix, data_col));
+        let selected_bg = theme.tokens.table_active;
+        let table = cx.weak_entity();
         let execution = self.execution.read(cx);
         let Some(value) = execution
             .rows()
             .get(row_ix)
-            .and_then(|row| row.get(col_ix))
+            .and_then(|row| row.get(data_col))
         else {
-            return div();
+            return cell_frame()
+                .border_r_1()
+                .border_color(border_color)
+                .into_any_element();
         };
-        let theme = cx.theme();
         let kind = self
             .kinds
-            .get(col_ix)
+            .get(data_col)
             .copied()
             .unwrap_or(ValueKind::Text);
         let number_color = theme
@@ -237,22 +462,57 @@ impl TableDelegate for ResultTableDelegate {
             (_, ValueKind::Json) => theme.green,
             _ => theme.foreground,
         };
-        div()
-            .w_full()
-            .truncate()
-            .text_color(color)
-            .when(
-                matches!(value, Value::Null | Value::Unsupported(_)),
-                |this| this.italic(),
+        let is_number = kind == ValueKind::Number;
+        let text = value_text(value);
+        let is_placeholder = matches!(value, Value::Null | Value::Unsupported(_));
+        let cell = (row_ix, data_col);
+        cell_frame()
+            .id((
+                "result-cell",
+                row_ix
+                    * self
+                        .data_column_count()
+                        .max(1)
+                    + data_col,
+            ))
+            .border_r_1()
+            .border_color(border_color)
+            .when(selected, |this| this.bg(selected_bg))
+            .when(is_number, |this| this.justify_end())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |table, event: &MouseDownEvent, window, cx| {
+                    table
+                        .delegate_mut()
+                        .press(CellRange::cell(cell.0, cell.1), event.modifiers.shift);
+                    focus_table(table, window, cx);
+                    cx.notify();
+                }),
             )
-            .child(value_text(value))
+            .on_mouse_move(cx.listener(move |table, event: &MouseMoveEvent, _, cx| {
+                let button_held = event.pressed_button == Some(MouseButton::Left);
+                if table
+                    .delegate_mut()
+                    .drag_to(cell, button_held)
+                {
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .truncate()
+                    .text_color(color)
+                    .when(is_placeholder, |this| this.italic())
+                    .child(text),
+            )
+            .context_menu(move |menu, _window, cx| cell_context_menu(&table, cell, menu, cx))
+            .into_any_element()
     }
 
     fn cell_text(&self, row_ix: usize, col_ix: usize, cx: &App) -> String {
-        match self.value(row_ix, col_ix, cx) {
-            Some(Value::Text(text)) => text,
-            Some(value) => value_text(&value).to_string(),
-            None => String::new(),
+        match col_ix.checked_sub(1) {
+            Some(data_col) => self.copy_text(row_ix, data_col, cx),
+            None => (row_ix + 1).to_string(),
         }
     }
 
@@ -268,109 +528,599 @@ impl TableDelegate for ResultTableDelegate {
     }
 }
 
+/// Oldest entries are dropped past this, so a long session cannot grow the
+/// output without bound.
+const MAX_OUTPUT_ENTRIES: usize = 2000;
+const CONSOLE_LIST_WIDTH: Pixels = px(240.);
+const CONSOLE_ROW_HEIGHT: Pixels = px(24.);
+const CONSOLE_INDENT: Pixels = px(16.);
+
+fn timestamp() -> String {
+    chrono::Local::now()
+        .format("[%Y-%m-%d %H:%M:%S:%3f]")
+        .to_string()
+}
+
+/// `[time] prompt> first line`, with the statement's other lines indented
+/// under its first one.
+fn statement_entry(prompt: &str, statement: &str) -> String {
+    let prefix = format!("{} {prompt}> ", timestamp());
+    let indent = " ".repeat(prefix.chars().count());
+    let mut entry = prefix;
+    for (line_ix, line) in statement.lines().enumerate() {
+        if line_ix > 0 {
+            entry.push('\n');
+            entry.push_str(&indent);
+        }
+        entry.push_str(line);
+    }
+    entry
+}
+
+fn outcome_entry(execution: &QueryExecution) -> String {
+    let duration = execution
+        .duration()
+        .map(format_duration)
+        .unwrap_or_default();
+    let outcome = match execution.state() {
+        ExecutionState::Failed(error) => error.to_string(),
+        ExecutionState::Cancelled => "Cancelled".to_string(),
+        ExecutionState::Running => "Running…".to_string(),
+        ExecutionState::Ready if execution.columns().is_empty() => format!(
+            "{} in {duration}",
+            plural(
+                execution
+                    .rows_affected()
+                    .unwrap_or(0),
+                "row affected",
+                "rows affected",
+            )
+        ),
+        ExecutionState::Ready => {
+            let rows = plural(execution.rows().len() as u64, "row", "rows");
+            let more = if execution.has_more() {
+                " (more available)"
+            } else {
+                ""
+            };
+            format!("{rows} retrieved in {duration}{more}")
+        }
+    };
+    format!("{} {outcome}", timestamp())
+}
+
+actions!(
+    results_panel,
+    [
+        /// Copies the selected cells as CSV, with the column names first.
+        CopySelection,
+    ]
+);
+
+const GRID_KEY_CONTEXT: &str = "ResultGrid";
+
+#[cfg(target_os = "macos")]
+const COPY_KEY: &str = "cmd-c";
+#[cfg(not(target_os = "macos"))]
+const COPY_KEY: &str = "ctrl-c";
+
+pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        COPY_KEY,
+        CopySelection,
+        Some(GRID_KEY_CONTEXT),
+    )]);
+}
+
+fn copy_selection(table: &Entity<TableState<ResultTableDelegate>>, cx: &mut App) {
+    if let Some(csv) = table
+        .read(cx)
+        .delegate()
+        .selection_csv(cx)
+    {
+        cx.write_to_clipboard(ClipboardItem::new_string(csv));
+    }
+}
+
+/// Cells fill their column with no padding from the table, so their right
+/// borders meet the row borders and join into column lines.
+fn cell_frame() -> Div {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .px_2()
+        .overflow_hidden()
+}
+
+fn cell_context_menu(
+    table: &WeakEntity<TableState<ResultTableDelegate>>,
+    cell: (usize, usize),
+    menu: PopupMenu,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let Some(table) = table.upgrade() else {
+        return menu;
+    };
+    table.update(cx, |table, cx| {
+        let delegate = table.delegate_mut();
+        delegate.dragging = false;
+        if !delegate
+            .selection
+            .is_some_and(|selection| selection.contains(cell.0, cell.1))
+        {
+            delegate.selection = Some(CellRange::cell(cell.0, cell.1));
+            cx.notify();
+        }
+    });
+    let delegate = table.read(cx).delegate();
+    let value = delegate.copy_text(cell.0, cell.1, cx);
+    let csv = delegate.selection_csv(cx);
+    menu.item(
+        PopupMenuItem::new("Copy Value")
+            .icon(AssetIconName::Copy)
+            .on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(value.clone()))
+            }),
+    )
+    .when_some(csv, |menu, csv| {
+        menu.item(PopupMenuItem::new("Copy as CSV").on_click(move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(csv.clone()))
+        }))
+    })
+}
+
 struct ResultTab {
     execution: Entity<QueryExecution>,
-    label: SharedString,
+    title: SharedString,
     table: Entity<TableState<ResultTableDelegate>>,
     _subscriptions: [Subscription; 2],
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveTab {
+    Output,
+    Result(usize),
+}
+
+/// One editor tab's runs: their output log and the results of the latest run.
+struct Console {
+    id: TabId,
+    name: SharedString,
+    connection_name: SharedString,
+    database: Option<SharedString>,
+    run: Entity<QueryRun>,
+    /// How much of `run` is already in the output: statements started and
+    /// statements ended.
+    logged_started: usize,
+    logged_ended: usize,
+    output: VecDeque<String>,
+    output_editor: Entity<EditorState>,
+    results: Vec<ResultTab>,
+    active_tab: ActiveTab,
+    _run_subscription: Subscription,
+}
+
+impl Console {
+    fn result_title(&self, statement: &str) -> SharedString {
+        match (from_target(statement), &self.database) {
+            (Some(target), Some(database)) => format!("{database}.{target}").into(),
+            (Some(target), None) => target.to_string().into(),
+            (None, _) => format!("Result {}", self.results.len() + 1).into(),
+        }
+    }
+
+    fn prompt(&self) -> &SharedString {
+        self.database
+            .as_ref()
+            .unwrap_or(&self.connection_name)
+    }
+
+    /// Logs what the run did since the last sync, in order: each statement,
+    /// then its outcome. Returns whether anything was added.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<ResultsPanel>) -> bool {
+        let run = self.run.read(cx);
+        let executions = run.executions().to_vec();
+        let ended_count = run.ended_count();
+        let mut changed = false;
+        loop {
+            if self.logged_started == self.logged_ended
+                && let Some(execution) = executions.get(self.logged_started)
+            {
+                let entry = statement_entry(self.prompt(), execution.read(cx).statement());
+                self.push_output(entry);
+                self.logged_started += 1;
+            } else if self.logged_ended < ended_count
+                && let Some(execution) = executions.get(self.logged_ended)
+            {
+                let ended = execution.read(cx);
+                let entry = outcome_entry(ended);
+                let returns_rows =
+                    *ended.state() == ExecutionState::Ready && !ended.columns().is_empty();
+                let title = returns_rows.then(|| self.result_title(ended.statement()));
+                self.push_output(entry);
+                self.logged_ended += 1;
+                if let Some(title) = title {
+                    let result = new_result_tab(execution.clone(), title, window, cx);
+                    self.results.push(result);
+                    self.active_tab = ActiveTab::Result(self.results.len() - 1);
+                }
+            } else {
+                break;
+            }
+            changed = true;
+        }
+        if changed {
+            let text = self
+                .output
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.output_editor
+                .update(cx, |editor, cx| {
+                    editor.set_value(text, window, cx);
+                    // Clamped to the end of the text on the next layout.
+                    editor.set_scroll_offset(point(px(0.), px(-1_000_000.)), cx);
+                });
+        }
+        changed
+    }
+
+    fn push_output(&mut self, entry: String) {
+        if self.output.len() == MAX_OUTPUT_ENTRIES {
+            self.output.pop_front();
+        }
+        self.output.push_back(entry);
+    }
+}
+
 pub struct ResultsPanel {
     focus_handle: FocusHandle,
-    tabs: Vec<ResultTab>,
-    active_tab: usize,
+    dock_area: WeakEntity<DockArea>,
+    consoles: Vec<Console>,
+    selected: Option<TabId>,
 }
 
 impl ResultsPanel {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(dock_area: WeakEntity<DockArea>, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
-            tabs: Vec::new(),
-            active_tab: 0,
+            dock_area,
+            consoles: Vec::new(),
+            selected: None,
         }
     }
 
-    pub fn show_execution(
+    pub fn show_run(
         &mut self,
-        execution: Entity<QueryExecution>,
+        console_run: &ConsoleRun,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let table = cx.new(|cx| {
-            TableState::new(ResultTableDelegate::new(execution.clone()), window, cx)
-                .sortable(false)
-                .col_movable(false)
-        });
-        let events = cx.subscribe(&execution, {
-            let table = table.clone();
-            move |_, _, event, cx| {
-                table.update(cx, |table, cx| {
-                    if let QueryExecutionEvent::Finished = event {
-                        table
-                            .delegate_mut()
-                            .sync_columns(cx);
-                        table.refresh(cx);
-                    }
-                    cx.notify();
+        let console_id = console_run.console;
+        let run_subscription =
+            cx.observe_in(&console_run.run, window, move |this, _, window, cx| {
+                this.sync_console(console_id, window, cx)
+            });
+        match self.console_mut(console_id) {
+            Some(console) => {
+                console.name = console_run
+                    .console_name
+                    .clone();
+                console.connection_name = console_run
+                    .connection_name
+                    .clone();
+                console.database = console_run.database.clone();
+                console.run = console_run.run.clone();
+                console.logged_started = 0;
+                console.logged_ended = 0;
+                console.results.clear();
+                console.active_tab = ActiveTab::Output;
+                console._run_subscription = run_subscription;
+            }
+            None => {
+                let output_editor = cx.new(|cx| {
+                    EditorState::new(window, cx)
+                        .line_number(false)
+                        .folding(false)
+                });
+                self.consoles.push(Console {
+                    id: console_id,
+                    name: console_run
+                        .console_name
+                        .clone(),
+                    connection_name: console_run
+                        .connection_name
+                        .clone(),
+                    database: console_run.database.clone(),
+                    run: console_run.run.clone(),
+                    logged_started: 0,
+                    logged_ended: 0,
+                    output: VecDeque::new(),
+                    output_editor,
+                    results: Vec::new(),
+                    active_tab: ActiveTab::Output,
+                    _run_subscription: run_subscription,
                 });
             }
-        });
-        let changes = cx.observe(&execution, |_, _, cx| cx.notify());
-        let label = single_line(
-            execution
-                .read(cx)
-                .statement()
-                .trim(),
-            MAX_TAB_LABEL_CHARS,
-        )
-        .into();
-        self.tabs.push(ResultTab {
-            execution,
-            label,
-            table,
-            _subscriptions: [events, changes],
-        });
-        self.active_tab = self.tabs.len() - 1;
+        }
+        self.selected = Some(console_id);
+        self.sync_console(console_id, window, cx);
         cx.notify();
     }
 
-    fn close_tab(&mut self, tab_ix: usize, cx: &mut Context<Self>) {
-        if tab_ix >= self.tabs.len() {
+    fn sync_console(&mut self, console_id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(console) = self.console_mut(console_id) {
+            console.sync(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_console(&mut self, console_id: TabId, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .consoles
+            .iter()
+            .position(|console| console.id == console_id)
+        else {
+            return;
+        };
+        self.consoles.remove(index);
+        if self.selected == Some(console_id) {
+            self.selected = self
+                .consoles
+                .get(index)
+                .or_else(|| self.consoles.last())
+                .map(|console| console.id);
+        }
+        cx.notify();
+    }
+
+    fn console(&self, id: TabId) -> Option<&Console> {
+        self.consoles
+            .iter()
+            .find(|console| console.id == id)
+    }
+
+    fn console_mut(&mut self, id: TabId) -> Option<&mut Console> {
+        self.consoles
+            .iter_mut()
+            .find(|console| console.id == id)
+    }
+
+    fn select_tab(&mut self, tab: ActiveTab, cx: &mut Context<Self>) {
+        if let Some(console) = self
+            .selected
+            .and_then(|id| self.console_mut(id))
+        {
+            console.active_tab = tab;
+            cx.notify();
+        }
+    }
+
+    fn close_result(&mut self, result_ix: usize, cx: &mut Context<Self>) {
+        let Some(console) = self
+            .selected
+            .and_then(|id| self.console_mut(id))
+        else {
+            return;
+        };
+        if result_ix >= console.results.len() {
             return;
         }
-        self.tabs.remove(tab_ix);
-        if self.active_tab > tab_ix || self.active_tab >= self.tabs.len() {
-            self.active_tab = self
-                .active_tab
-                .saturating_sub(1);
-        }
+        console
+            .results
+            .remove(result_ix);
+        console.active_tab = match console.active_tab {
+            ActiveTab::Result(active) if active == result_ix => match result_ix.checked_sub(1) {
+                Some(previous) => ActiveTab::Result(previous),
+                None if console.results.is_empty() => ActiveTab::Output,
+                None => ActiveTab::Result(0),
+            },
+            ActiveTab::Result(active) if active > result_ix => ActiveTab::Result(active - 1),
+            active => active,
+        };
         cx.notify();
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn close_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dock_area
+            .update(cx, |area, cx| {
+                area.toggle_dock(DockPlacement::Bottom, window, cx)
+            })
+            .log_err();
+    }
+
+    fn render_close_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_none()
+            .px_2()
+            .child(
+                IconButton::new("close-results-panel", IconName::Close)
+                    .small()
+                    .tooltip("Close Panel")
+                    .on_click(cx.listener(|this, _, window, cx| this.close_panel(window, cx))),
+            )
+    }
+
+    fn render_console_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel = cx.weak_entity();
+        let theme = cx.theme();
+        let mut connection_names: Vec<&SharedString> = Vec::new();
+        for console in &self.consoles {
+            if !connection_names.contains(&&console.connection_name) {
+                connection_names.push(&console.connection_name);
+            }
+        }
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (connection_ix, connection_name) in connection_names
+            .into_iter()
+            .enumerate()
+        {
+            rows.push(
+                h_flex()
+                    .id(("console-connection", connection_ix))
+                    .h(CONSOLE_ROW_HEIGHT)
+                    .flex_none()
+                    .px_2()
+                    .gap_1p5()
+                    .child(
+                        Icon::new(AssetIconName::Database)
+                            .size(ICON_SIZE_SMALL)
+                            .text_color(theme.muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .child(connection_name.clone()),
+                    )
+                    .into_any_element(),
+            );
+            for console in self
+                .consoles
+                .iter()
+                .filter(|console| &console.connection_name == connection_name)
+            {
+                let id = console.id;
+                let selected = self.selected == Some(id);
+                let run = console.run.read(cx);
+                let status: SharedString = match run.duration() {
+                    Some(duration) => format_duration(duration),
+                    None => "running…".into(),
+                };
+                rows.push(
+                    h_flex()
+                        .id(("console", id.index()))
+                        .h(CONSOLE_ROW_HEIGHT)
+                        .flex_none()
+                        .pl(CONSOLE_INDENT + px(8.))
+                        .pr_2()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .when(selected, |this| this.bg(theme.list_active))
+                        .when(!selected, |this| {
+                            this.hover(|style| style.bg(theme.list_hover))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.selected = Some(id);
+                            cx.notify();
+                        }))
+                        .child(
+                            Icon::new(AssetIconName::FileCode)
+                                .size(ICON_SIZE_SMALL)
+                                .text_color(theme.muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(console.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.muted_foreground)
+                                .child(status),
+                        )
+                        .context_menu({
+                            let panel = panel.clone();
+                            move |menu, _, _| {
+                                menu.item(entity_menu_item(
+                                    &panel,
+                                    "Close",
+                                    Some(AssetIconName::Close),
+                                    move |this, _, cx| this.close_console(id, cx),
+                                ))
+                            }
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+
+        v_flex()
+            .id("console-list")
+            .flex_none()
+            .w(CONSOLE_LIST_WIDTH)
+            .h_full()
+            .py_1()
+            .overflow_y_scroll()
+            .border_r_1()
+            .border_color(theme.border)
+            .text_size(LABEL_SIZE_SMALL)
+            .children(rows)
+    }
+
+    fn render_tab_bar(&self, console: &Console, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected_index = match console.active_tab {
+            ActiveTab::Output => 0,
+            ActiveTab::Result(result_ix) => result_ix + 1,
+        };
+        let output_tab = Tab::new()
+            .prefix(
+                div()
+                    .pl_2()
+                    .child(Icon::new(IconName::SquareTerminal).size(ICON_SIZE_SMALL)),
+            )
+            .child("Output");
+        let result_tabs = console
+            .results
+            .iter()
+            .enumerate()
+            .map(|(result_ix, result)| {
+                Tab::new()
+                    .prefix(
+                        div()
+                            .pl_2()
+                            .child(Icon::new(AssetIconName::Table).size(ICON_SIZE_SMALL)),
+                    )
+                    .child(result.title.clone())
+                    .suffix(
+                        div().mr_1().child(
+                            IconButton::new(("close-result", result_ix), IconName::Close)
+                                .small()
+                                .tooltip("Close Result")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close_result(result_ix, cx);
+                                })),
+                        ),
+                    )
+            });
         TabBar::new("result-tabs")
-            .selected_index(self.active_tab)
+            .selected_index(selected_index)
             .on_click(cx.listener(|this, tab_ix: &usize, _, cx| {
-                this.active_tab = *tab_ix;
-                cx.notify();
+                let tab = match tab_ix.checked_sub(1) {
+                    Some(result_ix) => ActiveTab::Result(result_ix),
+                    None => ActiveTab::Output,
+                };
+                this.select_tab(tab, cx);
             }))
-            .children(
-                self.tabs
-                    .iter()
-                    .enumerate()
-                    .map(|(tab_ix, tab)| {
-                        Tab::new()
-                            .child(tab.label.clone())
-                            .suffix(
-                                IconButton::new(("close-result", tab_ix), IconName::Close)
-                                    .small()
-                                    .tooltip("Close result")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.close_tab(tab_ix, cx);
-                                    })),
-                            )
-                    }),
+            .child(output_tab)
+            .children(result_tabs)
+            .suffix(
+                h_flex()
+                    .h_full()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(self.render_close_button(cx)),
+            )
+    }
+
+    fn render_output(&self, console: &Console, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .size_full()
+            .bg(editor_background(cx))
+            .child(
+                Editor::new(&console.output_editor)
+                    .readonly(true)
+                    .appearance(false)
+                    .bordered(false)
+                    .font_family(theme.mono_font_family.clone())
+                    .text_size(LABEL_SIZE_SMALL)
+                    .size_full(),
             )
     }
 
@@ -380,33 +1130,15 @@ impl ResultsPanel {
         let duration = execution
             .duration()
             .map(format_duration);
-        let (summary, color) = match execution.state() {
-            ExecutionState::Running => ("Running…".to_string(), theme.muted_foreground),
-            ExecutionState::Cancelled => ("Cancelled".to_string(), theme.muted_foreground),
-            ExecutionState::Failed(_) => ("Failed".to_string(), theme.danger),
-            ExecutionState::Ready if execution.columns().is_empty() => (
-                plural(
-                    execution
-                        .rows_affected()
-                        .unwrap_or(0),
-                    "row affected",
-                    "rows affected",
-                ),
-                theme.muted_foreground,
-            ),
-            ExecutionState::Ready => {
-                let rows = plural(execution.rows().len() as u64, "row", "rows");
-                let summary = if execution.is_loading_more() {
-                    format!("{rows}, loading more…")
-                } else if execution.has_more() {
-                    format!("{rows}, more available")
-                } else {
-                    rows
-                };
-                (summary, theme.muted_foreground)
-            }
+        let rows = plural(execution.rows().len() as u64, "row", "rows");
+        let summary = if execution.is_loading_more() {
+            format!("{rows}, loading more…")
+        } else if execution.has_more() {
+            format!("{rows}, more available")
+        } else {
+            rows
         };
-        let running = execution.state() == &ExecutionState::Running || execution.is_loading_more();
+        let loading = execution.is_loading_more();
 
         h_flex()
             .flex_none()
@@ -416,26 +1148,17 @@ impl ResultsPanel {
             .border_b_1()
             .border_color(theme.border)
             .text_size(LABEL_SIZE_SMALL)
-            .child(
-                div()
-                    .text_color(color)
-                    .child(summary),
-            )
-            .when_some(duration, |this, duration| {
-                this.child(
-                    div()
-                        .text_color(theme.muted_foreground)
-                        .child(duration),
-                )
-            })
+            .text_color(theme.muted_foreground)
+            .child(summary)
+            .when_some(duration, |this, duration| this.child(duration))
             .child(div().flex_1())
-            .when(running, |this| {
+            .when(loading, |this| {
                 let execution = tab.execution.clone();
                 this.child(
                     Button::new("cancel-execution")
                         .label("Cancel")
                         .label_size(LABEL_SIZE_SMALL)
-                        .tooltip("Stop waiting for this statement")
+                        .tooltip("Stop loading more rows")
                         .on_click(move |_, _, cx| {
                             execution.update(cx, |execution, cx| execution.cancel(cx));
                         }),
@@ -443,78 +1166,73 @@ impl ResultsPanel {
             })
     }
 
-    fn render_body(&self, tab: &ResultTab, cx: &mut Context<Self>) -> AnyElement {
-        let execution = tab.execution.read(cx);
-        let theme = cx.theme();
-        let has_columns = !execution.columns().is_empty();
-        let message = |text: SharedString| {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(LABEL_SIZE_SMALL)
-                .text_color(theme.muted_foreground)
-                .child(text)
-                .into_any_element()
-        };
-        let error = match execution.state() {
+    fn render_result(&self, tab: &ResultTab, cx: &mut Context<Self>) -> impl IntoElement {
+        let error = match tab.execution.read(cx).state() {
             ExecutionState::Failed(error) => Some(error.clone()),
             _ => None,
         };
-
-        if has_columns {
-            return v_flex()
-                .size_full()
-                .child(
+        let border_color = cx.theme().border;
+        let danger_color = cx.theme().danger;
+        v_flex()
+            .size_full()
+            .child(self.render_header(tab, cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .key_context(GRID_KEY_CONTEXT)
+                    .on_action({
+                        let table = tab.table.clone();
+                        move |_: &CopySelection, _, cx| copy_selection(&table, cx)
+                    })
+                    .child(
+                        DataTable::new(&tab.table)
+                            .bordered(false)
+                            .fixed_cols_border(false)
+                            .small(),
+                    ),
+            )
+            .when_some(error, |this, error| {
+                this.child(
                     div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(
-                            DataTable::new(&tab.table)
-                                .bordered(false)
-                                .small(),
-                        ),
+                        .flex_none()
+                        .px_2()
+                        .py_1()
+                        .border_t_1()
+                        .border_color(border_color)
+                        .text_size(LABEL_SIZE_SMALL)
+                        .text_color(danger_color)
+                        .child(error),
                 )
-                .when_some(error, |this, error| {
-                    this.child(
-                        div()
-                            .flex_none()
-                            .px_2()
-                            .py_1()
-                            .border_t_1()
-                            .border_color(theme.border)
-                            .text_size(LABEL_SIZE_SMALL)
-                            .text_color(theme.danger)
-                            .child(error),
-                    )
-                })
-                .into_any_element();
-        }
+            })
+    }
+}
 
-        match execution.state() {
-            ExecutionState::Running => message("Running…".into()),
-            ExecutionState::Cancelled => message("Cancelled".into()),
-            ExecutionState::Failed(error) => div()
-                .id("result-error")
-                .size_full()
-                .overflow_y_scroll()
-                .p_2()
-                .text_size(LABEL_SIZE_SMALL)
-                .text_color(theme.danger)
-                .child(error.clone())
-                .into_any_element(),
-            ExecutionState::Ready => message(
-                plural(
-                    execution
-                        .rows_affected()
-                        .unwrap_or(0),
-                    "row affected",
-                    "rows affected",
-                )
-                .into(),
-            ),
-        }
+fn new_result_tab(
+    execution: Entity<QueryExecution>,
+    title: SharedString,
+    window: &mut Window,
+    cx: &mut Context<ResultsPanel>,
+) -> ResultTab {
+    let table = cx.new(|cx| {
+        let mut delegate = ResultTableDelegate::new(execution.clone());
+        delegate.sync_columns(cx);
+        TableState::new(delegate, window, cx)
+            .sortable(false)
+            .col_movable(false)
+            .row_selectable(false)
+            .col_selectable(false)
+    });
+    let events = cx.subscribe(&execution, {
+        let table = table.clone();
+        move |_, _, _, cx| table.update(cx, |_, cx| cx.notify())
+    });
+    let changes = cx.observe(&execution, |_, _, cx| cx.notify());
+    ResultTab {
+        execution,
+        title,
+        table,
+        _subscriptions: [events, changes],
     }
 }
 
@@ -544,27 +1262,52 @@ impl Panel for ResultsPanel {
 
 impl Render for ResultsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(tab) = self.tabs.get(self.active_tab) else {
+        let Some(console) = self
+            .selected
+            .and_then(|id| self.console(id))
+        else {
             return v_flex()
                 .size_full()
-                .justify_center()
-                .items_center()
-                .text_size(LABEL_SIZE_SMALL)
-                .text_color(cx.theme().muted_foreground)
-                .child("Run a statement to see its results here")
+                .track_focus(&self.focus_handle)
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .h(PANEL_HEADER_HEIGHT)
+                        .justify_end()
+                        .child(self.render_close_button(cx)),
+                )
                 .into_any_element();
         };
+        let body = match console.active_tab {
+            ActiveTab::Result(result_ix) => match console.results.get(result_ix) {
+                Some(result) => self
+                    .render_result(result, cx)
+                    .into_any_element(),
+                None => self
+                    .render_output(console, cx)
+                    .into_any_element(),
+            },
+            ActiveTab::Output => self
+                .render_output(console, cx)
+                .into_any_element(),
+        };
 
-        v_flex()
+        h_flex()
             .size_full()
             .track_focus(&self.focus_handle)
-            .child(self.render_tab_bar(cx))
-            .child(self.render_header(tab, cx))
+            .child(self.render_console_list(cx))
             .child(
-                div()
+                v_flex()
                     .flex_1()
-                    .min_h_0()
-                    .child(self.render_body(tab, cx)),
+                    .min_w_0()
+                    .h_full()
+                    .child(self.render_tab_bar(console, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .child(body),
+                    ),
             )
             .into_any_element()
     }
@@ -576,7 +1319,9 @@ mod tests {
 
     use dbolt_database::Value;
 
-    use super::{ValueKind, format_duration, single_line, value_text};
+    use super::{
+        CellRange, ValueKind, csv_field, format_duration, single_line, statement_entry, value_text,
+    };
 
     #[test]
     fn value_kinds_follow_the_column_type() {
@@ -607,5 +1352,45 @@ mod tests {
             format_duration(Duration::from_secs(65)).as_ref(),
             "1 m 05 s"
         );
+    }
+
+    #[test]
+    fn csv_fields_are_quoted_only_when_needed() {
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a,b"), "\"a,b\"");
+        assert_eq!(csv_field("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_field("two\nlines"), "\"two\nlines\"");
+    }
+
+    #[test]
+    fn statement_lines_are_indented_under_the_first() {
+        let entry = statement_entry("db", "select 1\nfrom t");
+        let mut lines = entry.lines();
+        let first = lines
+            .next()
+            .unwrap_or_default();
+        let second = lines
+            .next()
+            .unwrap_or_default();
+        assert!(first.ends_with("db> select 1"));
+        assert_eq!(second.trim_start(), "from t");
+        assert_eq!(
+            second.len() - "from t".len(),
+            first.len() - "select 1".len()
+        );
+    }
+
+    #[test]
+    fn a_dragged_range_covers_the_rectangle_in_any_direction() {
+        let range = CellRange {
+            anchor: (5, 3),
+            head: (2, 1),
+        };
+        assert_eq!(range.rows(), 2..6);
+        assert_eq!(range.cols(), 1..4);
+        assert!(range.contains(2, 1));
+        assert!(range.contains(5, 3));
+        assert!(!range.contains(6, 3));
+        assert!(!range.contains(4, 0));
     }
 }

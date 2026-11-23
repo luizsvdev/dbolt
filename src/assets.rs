@@ -7,13 +7,16 @@ gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
         Copy,
+        Database,
         FilePlus,
         FileCode,
         FolderPlus,
         FolderSearch,
+        ListVideo,
         Pencil,
         Plug,
         RefreshCw,
+        Table,
         Trash,
         Unplug,
     ]

@@ -1,7 +1,6 @@
 pub mod connection_dialog;
 pub mod connection_tree;
 pub mod connections_panel;
-pub mod console;
 pub mod editor_panel;
 pub mod project_panel;
 pub mod results_panel;
